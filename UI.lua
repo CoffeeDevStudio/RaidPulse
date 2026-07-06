@@ -355,7 +355,7 @@ function MCA:DrawSidebar(root)
     emblem:SetSize(48,48)
     emblem:SetTexture("Interface\\AddOns\\RaidPulse\\Textures\\icon")
 
-    self:Text(side, "MCA", "GameFontHighlightLarge", {"TOPLEFT", side, "TOPLEFT", 72, -22}, 55, self:UIColor("accent"))
+    self:Text(side, "RP", "GameFontHighlightLarge", {"TOPLEFT", side, "TOPLEFT", 72, -22}, 55, self:UIColor("accent"))
     self:Text(side, "v"..(self.VERSION or "?"), "GameFontNormalSmall", {"TOPLEFT", side, "TOPLEFT", 74, -47}, 55, self:UIColor("gray"))
 
     local tabs = {
@@ -974,16 +974,16 @@ end
 function MCA:DrawHistoryPage(parent)
     local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
 
-    self:Text(parent, "Report salvati: " .. tostring(#history), "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 20, -20}, 240, self:UIColor("gray"))
+    self:Text(parent, "Report salvati: " .. tostring(#history), "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 20, -56}, 240, self:UIColor("gray"))
 
-    self:Button(parent, "Cancella storico", {"TOPRIGHT", parent, "TOPRIGHT", -20, -14}, 140, 24, function()
+    self:Button(parent, "Cancella storico", {"TOPRIGHT", parent, "TOPRIGHT", -20, -50}, 140, 24, function()
         MCA:ClearHistory()
         MCA.activeTab = "history"
         MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
     end, true)
 
     local header = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-    header:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, -56)
+    header:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, -92)
     header:SetSize(1060, 28)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
 
