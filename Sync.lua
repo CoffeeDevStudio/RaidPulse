@@ -20,7 +20,7 @@ end
 
 
 function MCA:SendAddonMulti(msg)
-    if not MidnightCombatAnalyticsDB.config.syncEnabled then return end
+    if not RaidPulseDB.config.syncEnabled then return end
     if not C_ChatInfo or not C_ChatInfo.SendAddonMessage then return end
 
     local sent = {}
@@ -181,9 +181,9 @@ function MCA:GetReportMergeTarget(syncID, bossName)
         return self.lastReport
     end
 
-    if MidnightCombatAnalyticsDB and MidnightCombatAnalyticsDB.history then
-        for i = #MidnightCombatAnalyticsDB.history, 1, -1 do
-            local r = MidnightCombatAnalyticsDB.history[i]
+    if RaidPulseDB and RaidPulseDB.history then
+        for i = #RaidPulseDB.history, 1, -1 do
+            local r = RaidPulseDB.history[i]
             if r and ((bossName and r.boss == bossName) or (syncID and self:GetReportSyncID(r) == syncID)) then
                 self.lastReport = r
                 return r
@@ -297,7 +297,7 @@ function MCA:AddSyncedDeathToReport(data, name, class, role, guid, t)
 end
 
 function MCA:SendReportSnapshot(report)
-    if not report or not MidnightCombatAnalyticsDB.config.syncEnabled then return end
+    if not report or not RaidPulseDB.config.syncEnabled then return end
 
     local myName, myClass, myRole, myGuid = self:GetPlayerIdentity()
     if not myName then return end

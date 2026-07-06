@@ -30,6 +30,28 @@ function MCA:AddRosterUnit(unit)
 
     self.roster[name] = self:CreateEmptyPlayer(name, class, role, guid, unit)
 
+    -- Capture spec for the local player (we can only query our own spec via
+    -- the standard API; other players' specs would require inspects). This is
+    -- used by Parse.lua to match the RaidPulse_Benchmarks entries precisely.
+    if UnitIsUnit(unit, "player") and GetSpecialization then
+        local specIndex = GetSpecialization()
+        if specIndex and GetSpecializationInfo then
+            local specID = GetSpecializationInfo(specIndex)
+            if specID then
+                self.roster[name].specID = specID
+            end
+        end
+    else
+        -- For other players, use the cached specID from previous inspects if
+        -- we have one; otherwise queue an inspect. The queue is throttled and
+        -- may take a few seconds per player.
+        if guid and self.specCache and self.specCache[guid] then
+            self.roster[name].specID = self.specCache[guid]
+        elseif self.InspectSpec_Queue then
+            self:InspectSpec_Queue(unit)
+        end
+    end
+
     if guid then
         self.guidToName[guid] = name
     end
@@ -62,6 +84,7 @@ function MCA:CopyRosterToSession()
         self.session.players[name] = self:CreateEmptyPlayer(p.name, p.class, p.role, p.guid, p.unit)
         self.session.players[name].hasAddon = p.hasAddon
         self.session.players[name].version = p.version
+        self.session.players[name].specID = p.specID
     end
 end
 
@@ -74,6 +97,10 @@ function MCA:EnsureSessionPlayer(name, class, role, guid)
         self.session.players[name] = self:CreateEmptyPlayer(name, class, role, guid, nil)
         self.session.players[name].hasAddon = true
         self.session.players[name].synced = true
+        -- If we already have this GUID's spec from the inspect cache, apply it.
+        if guid and self.specCache and self.specCache[guid] then
+            self.session.players[name].specID = self.specCache[guid]
+        end
     else
         local p = self.session.players[name]
         p.class = class or p.class
@@ -170,9 +197,9 @@ function MCA:StartMythicPlusSession()
     self:Print("Mythic+ started")
 end
 
-function MCA:FinishMythicPlusSession(success)
+function MCA:FinishMythicPlusSession(success, forceImmediate)
     if not self.session or self.session.type ~= "M+" then return end
-    self:FinalizeSession(success == true)
+    self:FinalizeSession(success == true, forceImmediate)
 end
 
 
@@ -215,26 +242,97 @@ function MCA:NormalizeDamageMeterName(name)
 
     return tostring(plain)
 end
-function MCA:FindSessionPlayerByDamageMeterSource(source)
-    if not self.session or not source then return nil end
 
-    local name = source.name or source.unitName or source.playerName or source.sourceName
-    name = self:NormalizeDamageMeterName(name)
 
-    if name and self.session.players and self.session.players[name] then
-        return self.session.players[name]
+-- ============================================================================
+-- MCA 4.3.5 Damage Meter late joiner helpers
+-- If raid roster changed during the pull, the Blizzard meter may contain players
+-- that were not in the initial MCA session snapshot. When the source is readable,
+-- create/update the MCA session player by meter name.
+-- ============================================================================
+
+function MCA:GetSafeDamageMeterString(source, fieldName)
+    if not source or not fieldName then return nil end
+    local ok, value = pcall(function()
+        local v = source[fieldName]
+        if v == nil then return nil end
+        return tostring(v)
+    end)
+    if ok and type(value) == "string" and value ~= "" then
+        return value
     end
-
-    local guid = source.guid or source.GUID or source.unitGUID or source.sourceGUID
-    if guid then
-        for _, p in pairs(self.session.players or {}) do
-            if p.guid == guid then return p end
-        end
-    end
-
     return nil
 end
 
+function MCA:GetSafeDamageMeterSourceShortName(source)
+    local name = self:GetSafeDamageMeterString(source, "name")
+    if not name then return nil, nil end
+
+    local short = name
+    local ok, first = pcall(function()
+        return strsplit and strsplit("-", name) or string.match(name, "^([^-]+)")
+    end)
+
+    if ok and type(first) == "string" and first ~= "" then
+        short = first
+    end
+
+    return short, name
+end
+
+function MCA:EnsureSessionPlayerFromDamageMeterSource(source)
+    if not self.session or not source then return nil end
+    self.session.players = self.session.players or {}
+
+    local shortName, fullName = self:GetSafeDamageMeterSourceShortName(source)
+    if not shortName then return nil end
+
+    local p = self.session.players[shortName] or (fullName and self.session.players[fullName])
+    if not p then
+        p = self:CreateEmptyPlayer(shortName)
+        self.session.players[shortName] = p
+    end
+
+    local classFilename = self:GetSafeDamageMeterString(source, "classFilename")
+    if classFilename and (not p.class or p.class == "UNKNOWN") then
+        p.class = classFilename
+    end
+
+    p.name = p.name or shortName
+    p.fromDamageMeter = true
+    return p
+end
+
+function MCA:FindSessionPlayerByDamageMeterSource(source)
+    -- MCA 4.3.5:
+    -- Match by safe Damage Meter name. If roster changed mid-fight and the
+    -- player was not in the original session snapshot, create/update it from
+    -- the readable Blizzard meter source.
+    if not self.session or not source or type(self.session.players) ~= "table" then return nil end
+
+    local ok, p = pcall(function()
+        local shortName, fullName = self:GetSafeDamageMeterSourceShortName(source)
+        if not shortName then return nil end
+
+        local existing = self.session.players[shortName]
+        if existing then return existing end
+
+        if fullName and self.session.players[fullName] then
+            return self.session.players[fullName]
+        end
+
+        for _, candidate in pairs(self.session.players) do
+            if candidate and (candidate.name == shortName or candidate.name == fullName) then
+                return candidate
+            end
+        end
+
+        return self:EnsureSessionPlayerFromDamageMeterSource(source)
+    end)
+
+    if ok then return p end
+    return nil
+end
 function MCA:GetDamageMeterSource(index)
     if not C_DamageMeter then return nil end
 
@@ -368,24 +466,34 @@ function MCA:ApplyBlizzardDamageMeterSources(session, bucketName, metricField, t
     self.session.blizzard[bucketName] = self.session.blizzard[bucketName] or {}
 
     local applied = 0
+    local skippedProtected = 0
 
     for _, source in ipairs(session.combatSources) do
-        local p = self:FindSessionPlayerByDamageMeterSource(source)
-        local amountPerSecond = tonumber(source.amountPerSecond or source.dps or source.hps or 0) or 0
-        local totalAmount = tonumber(source.totalAmount or source.total or 0) or 0
+        local ok, matched = pcall(function()
+            local p = self:FindSessionPlayerByDamageMeterSource(source)
+            if not p then return false end
 
-        if p and amountPerSecond > 0 then
+            local amountPerSecond = tonumber(source.amountPerSecond or source.dps or source.hps or 0) or 0
+            local totalAmount = tonumber(source.totalAmount or source.total or 0) or 0
+
+            if amountPerSecond <= 0 then return false end
+
+            local sourceName = self:GetSafeDamageMeterString(source, "name")
+            local classFilename = self:GetSafeDamageMeterString(source, "classFilename")
+            if classFilename and (not p.class or p.class == "UNKNOWN") then
+                p.class = classFilename
+            end
+
             p.blizzard = p.blizzard or {}
             p.blizzard[bucketName] = {
                 amountPerSecond = amountPerSecond,
                 totalAmount = totalAmount,
-                sourceGUID = source.sourceGUID or source.guid or source.unitGUID,
-                name = source.name,
-                classFilename = source.classFilename,
+                name = sourceName,
+                classFilename = classFilename,
                 sessionDuration = session.durationSeconds,
             }
 
-            local key = p.guid or source.sourceGUID or p.name or source.name
+            local key = p.guid or p.name or sourceName
             if key then
                 self.session.blizzard[bucketName][key] = p.blizzard[bucketName]
             end
@@ -403,18 +511,69 @@ function MCA:ApplyBlizzardDamageMeterSources(session, bucketName, metricField, t
                 p.healingDone = totalAmount
             end
 
-            if source.classFilename and (not p.class or p.class == "UNKNOWN") then
-                p.class = source.classFilename
-            end
+            return true
+        end)
 
+        if ok and matched then
             applied = applied + 1
+        elseif not ok then
+            skippedProtected = skippedProtected + 1
+        end
+    end
+
+    if skippedProtected > 0 then
+        self.session.blizzard.skippedProtectedSources = (self.session.blizzard.skippedProtectedSources or 0) + skippedProtected
+        if self.Debug then
+            self:Debug("Skipped protected Blizzard meter sources: " .. tostring(skippedProtected))
         end
     end
 
     return applied
 end
+-- MCA 4.2.6: Mythic+ overall DPS/HPS helper, rebased from 4.1.8.
+-- Keeps the original working ApplyBlizzardDamageMeterSources() logic untouched.
+function MCA:IsCurrentSessionMythicPlusOverallMode()
+    if not self.session then return false end
+    local t = tostring(self.session.type or ""):lower()
+    local m = tostring(self.session.mode or ""):lower()
+    local d = tostring(self.session.difficulty or ""):lower()
+    return t == "m+" or m:find("mythic%+") ~= nil or d:find("mythic%+") ~= nil or d:find("%+") ~= nil
+end
 
+function MCA:GetBestOverallBlizzardDamageMeterSession(meterType)
+    if not meterType or not self:DamageMeterAvailable() then return nil, nil end
+
+    local bestSession, bestID, bestDuration = nil, nil, -1
+
+    for sessionID = 0, 30 do
+        local data = self:GetBlizzardDamageMeterSession(sessionID, meterType)
+        if type(data) == "table" and type(data.combatSources) == "table" and #data.combatSources > 0 then
+            local duration = tonumber(data.durationSeconds or data.duration or 0) or 0
+            if duration > bestDuration then
+                bestSession = data
+                bestID = sessionID
+                bestDuration = duration
+            end
+        end
+    end
+
+    return bestSession, bestID
+end
+
+function MCA:CaptureMythicPlusOverallDamageHealing()
+    -- MCA 4.2.7:
+    -- Disabled temporarily. The Blizzard overall session can expose protected sources post-wipe.
+    -- Keep stable encounter capture only until the meter API is mapped safely.
+    return false
+end
 function MCA:CaptureDamageMeterStats()
+
+    -- MCA 4.2.6 M+ overall first.
+    -- For Mythic+, use overall key DPS/HPS instead of boss/encounter session.
+    -- Raid keeps the original encounter-based behavior below.
+    if self.CaptureMythicPlusOverallDamageHealing and self:CaptureMythicPlusOverallDamageHealing() then
+        return
+    end
     if not self.session or not self:DamageMeterAvailable() then return end
 
     local dpsType = self:GetDamageMeterEnumValue("DamageMeterType", "Dps", 1)
@@ -439,7 +598,53 @@ function MCA:CaptureDamageMeterStats()
     end
 end
 
-function MCA:FinalizeSession(success)
+
+
+-- ============================================================================
+-- MCA 4.3.6 Mythic+ total key deaths
+-- ============================================================================
+
+function MCA:IsMythicPlusData(data)
+    if not data then return false end
+    local t = tostring(data.type or ""):lower()
+    local m = tostring(data.mode or ""):lower()
+    local d = tostring(data.difficulty or ""):lower()
+    return t == "m+" or m:find("mythic%+") ~= nil or d:find("mythic%+") ~= nil or d:find("%+") ~= nil
+end
+
+function MCA:CalculateTotalDeaths(data)
+    if not data then return 0 end
+
+    local total = 0
+
+    if type(data.players) == "table" then
+        for _, p in pairs(data.players) do
+            total = total + (tonumber(p.deaths or 0) or 0)
+        end
+    end
+
+    if total == 0 and type(data.timeline) == "table" then
+        for _, e in ipairs(data.timeline) do
+            local eventType = tostring(e.type or ""):lower()
+            local text = tostring(e.text or ""):lower()
+            if eventType == "death" or text:find(" muore", 1, true) or text:find(" dies", 1, true) then
+                total = total + 1
+            end
+        end
+    end
+
+    return total
+end
+
+function MCA:ApplyMythicPlusTotalDeaths(data)
+    if not data or not self:IsMythicPlusData(data) then return end
+    local total = self:CalculateTotalDeaths(data)
+    data.totalDeaths = total
+    data.deaths = total
+    data.mplusDeathsTotal = total
+end
+
+function MCA:FinalizeSession(success, forceImmediate)
     if not self.session then return end
 
     if self.ScanAllAuras then self:ScanAllAuras() end
@@ -456,7 +661,28 @@ function MCA:FinalizeSession(success)
 
     self.session.difficulty = self.session.difficulty or self:GetCurrentRaidDifficultyLabel()
     if self.CaptureDamageMeterStats then self:CaptureDamageMeterStats() end
+
+    -- MCA 4.3.6 apply M+ total deaths before report
+    if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(self.session) end
     local report = self:BuildReport(self.session)
+
+    -- MCA 4.3.6 apply M+ total deaths after report
+    if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(report) end
+
+    -- MCA 4.3.5 late-joiner final rating pass
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
+
+    -- MCA 4.3.4 final rating pass after report build
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
+
+    -- MCA 4.3.3 strict meter rating after report build
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
+
+    -- MCA 4.3.0 force class ratings after report build
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
+
+    -- MCA 4.2.8: apply final class-only ratings after BuildReport
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
 
     self.lastReport = report
     self:SaveReportToHistory(report)
@@ -473,7 +699,7 @@ function MCA:FinalizeSession(success)
     self.session = nil
     self.currentMythicBoss = nil
 
-    self:SafeOpenReport(report)
+    self:SafeOpenReport(report, forceImmediate)
 end
 
 
@@ -538,33 +764,33 @@ function MCA:SaveReportToHistory(report)
     if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
     if not report then return end
 
-    MidnightCombatAnalyticsDB.history = MidnightCombatAnalyticsDB.history or {}
+    RaidPulseDB.history = RaidPulseDB.history or {}
 
     report.savedAt = report.savedAt or (date and date("%d/%m/%Y %H:%M") or "?")
     report.savedAtEpoch = report.savedAtEpoch or (time and time() or 0)
     report.historyID = report.historyID or (tostring(report.savedAtEpoch) .. "-" .. tostring(math.random(1000, 9999)))
 
-    table.insert(MidnightCombatAnalyticsDB.history, report)
+    table.insert(RaidPulseDB.history, report)
 
     local limit = 50
-    if MidnightCombatAnalyticsDB.config and MidnightCombatAnalyticsDB.config.historyLimit then
-        limit = MidnightCombatAnalyticsDB.config.historyLimit
+    if RaidPulseDB.config and RaidPulseDB.config.historyLimit then
+        limit = RaidPulseDB.config.historyLimit
     end
 
     if not limit or limit < 1 then limit = 50 end
 
-    while #MidnightCombatAnalyticsDB.history > limit do
-        table.remove(MidnightCombatAnalyticsDB.history, 1)
+    while #RaidPulseDB.history > limit do
+        table.remove(RaidPulseDB.history, 1)
     end
 end
 
 function MCA:GetHistory()
-    MidnightCombatAnalyticsDB.history = MidnightCombatAnalyticsDB.history or {}
-    return MidnightCombatAnalyticsDB.history
+    RaidPulseDB.history = RaidPulseDB.history or {}
+    return RaidPulseDB.history
 end
 
 function MCA:ClearHistory()
-    MidnightCombatAnalyticsDB.history = {}
+    RaidPulseDB.history = {}
     self:Print("Storico report cancellato.")
 end
 

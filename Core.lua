@@ -1,81 +1,61 @@
+-- RaidPulse — Core
+-- Real-time raid and Mythic+ analytics with local parse.
 
--- v4.0.0 rebrand compatibility / saved variable migration
-_G.MidnightCombatAnalyticsDB = _G.MidnightCombatAnalyticsDB or _G.MidnightDefensiveReviewDB or {}
-MCA = _G.MCA or MCA or {}
-_G.MCA = MCA
+_G.RaidPulse = _G.RaidPulse or {}
+RaidPulse = _G.RaidPulse
 
--- Temporary compatibility alias for old external references during transition.
-_G.MDR = _G.MDR or MCA
-
-MCA.VERSION = "4.1.9"
-MCA.PREFIX = "MCA40"
-
-_G.MCA = _G.MCA or {}
+-- MCA is kept as an internal alias for the huge existing codebase; it points
+-- to the same table as RaidPulse, so both work interchangeably. New code
+-- should prefer RaidPulse:… over MCA:…
+_G.MCA = _G.MCA or RaidPulse
 MCA = _G.MCA
+RaidPulse = MCA
 
-MCA.VERSION = "4.1.9"
-MCA.PREFIX = "MCA40"
+MCA.VERSION = "1.0"
+MCA.PREFIX  = "RP10"        -- addon comm prefix (must be short)
 
-MCA.session = nil
-MCA.roster = {}
-MCA.guidToName = {}
-MCA.lastReport = nil
+MCA.session       = nil
+MCA.roster        = {}
+MCA.guidToName    = {}
+MCA.lastReport    = nil
 MCA.selectedPlayer = nil
-MCA.activeTab = "summary"
+MCA.activeTab     = "summary"
 
-MidnightCombatAnalyticsDB = MidnightCombatAnalyticsDB or {}
-MidnightCombatAnalyticsDB.history = MidnightCombatAnalyticsDB.history or {}
-MidnightCombatAnalyticsDB.config = MidnightCombatAnalyticsDB.config or {}
+-- Saved variables scaffolding.
+RaidPulseDB          = RaidPulseDB or {}
+RaidPulseDB.history  = RaidPulseDB.history or {}
+RaidPulseDB.config   = RaidPulseDB.config or {}
 
 local defaults = {
-    showAfterKill = true,
-    showAfterWipe = true,
-    showMythicEnd = true,
-    syncEnabled = true,
-    debug = false,
-    useElvUISkin = true,
-    autoOpen = true,
+    showAfterKill      = true,
+    showAfterWipe      = true,
+    showMythicEnd      = true,
+    syncEnabled        = true,
+    debug              = false,
+    useElvUISkin       = true,
+    autoOpen           = true,
     minimapButtonShown = true,
-    minimapAngle = 225,
-    historyLimit = 50
+    minimapAngle       = 225,
+    historyLimit       = 50,
 }
 
 for k, v in pairs(defaults) do
-    if MidnightCombatAnalyticsDB.config[k] == nil then
-        MidnightCombatAnalyticsDB.config[k] = v
+    if RaidPulseDB.config[k] == nil then
+        RaidPulseDB.config[k] = v
     end
 end
 
 function MCA:Print(msg)
-    print("|cff00ccff[MCA]|r " .. tostring(msg))
+    print("|cff00ccff[RP]|r " .. tostring(msg))
 end
 
 function MCA:Debug(msg)
-    if MidnightCombatAnalyticsDB.config.debug then
-        print("|cffffaa00[MCA DEBUG]|r " .. tostring(msg))
+    if RaidPulseDB.config.debug then
+        print("|cffffaa00[RP DEBUG]|r " .. tostring(msg))
     end
 end
 
-
-SLASH_MIDNIGHTCOMBATANALYTICS1 = "/mca"
-SlashCmdList["MIDNIGHTCOMBATANALYTICS"] = function(msg)
-    msg = string.lower(tostring(msg or ""))
-
-    if msg == "raidbuff" or msg == "buff" then
-        if MCA and MCA.ShowRaidBuffWindow then MCA:ShowRaidBuffWindow() end
-        return
-    end
-
-    if MCA and MCA.ShowUI then
-        if MCA.GetLastAvailableReport then
-            MCA:ShowUI(MCA:GetLastAvailableReport())
-        else
-            MCA:ShowUI(MCA.lastReport)
-        end
-    end
-end
-
-
-
-
-
+-- Slash command aliases. The actual handler lives in Config.lua so the
+-- subcommand routing is in one place.
+SLASH_RAIDPULSE1 = "/rp"
+SLASH_RAIDPULSE2 = "/raidpulse"

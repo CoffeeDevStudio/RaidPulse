@@ -1,0 +1,25 @@
+## Interface: 120007
+## Title: RaidPulse
+## Notes: Real-time raid and Mythic+ analytics with local parse
+## Author: Simone Pimpinella
+## Version: 1.0
+## IconTexture: Interface\AddOns\RaidPulse\Textures\icon
+## SavedVariables: RaidPulseDB
+
+Core.lua
+SpellDB.lua
+ClassBuffs.lua
+BenchmarksDB.lua
+Utils.lua
+Style.lua
+Session.lua
+Sync.lua
+Trackers.lua
+Parse.lua
+SpecInspect.lua
+Report.lua
+UI.lua
+RaidBuffWindow.lua
+Minimap.lua
+Config.lua
+Events.lua

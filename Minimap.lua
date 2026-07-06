@@ -72,7 +72,7 @@ end
 function MCA:MinimapButton_UpdatePosition()
     if not self.MinimapButton then return end
 
-    local angle = MidnightCombatAnalyticsDB.config.minimapAngle or 225
+    local angle = RaidPulseDB.config.minimapAngle or 225
     local radius = 80
     local rad = math.rad(angle)
 
@@ -86,7 +86,7 @@ function MCA:MinimapButton_UpdatePosition()
 end
 
 function MCA:MinimapButton_SetShown(shown)
-    MidnightCombatAnalyticsDB.config.minimapButtonShown = shown and true or false
+    RaidPulseDB.config.minimapButtonShown = shown and true or false
 
     if self.MinimapButton then
         if shown then
@@ -159,13 +159,14 @@ function MCA:MinimapMenu_Rebuild()
     title:SetPoint("TOPLEFT", 12, -10)
     title:SetWidth(200)
     title:SetJustifyH("LEFT")
-    title:SetText("Midnight Combat Analytics")
+    title:SetText("RaidPulse")
     table.insert(self.MinimapMenu.rows, title)
 
     y = self:MinimapMenu_AddButton("Apri UI", y, function()
         MCA:ShowUI(MCA:GetLastAvailableReport())
     end)
-y = self:MinimapMenu_AddButton("Raid Buff Check", y, function()
+
+    y = self:MinimapMenu_AddButton("Raid Buff Check", y, function()
         if MCA.ShowRaidBuffWindow then
             MCA:ShowRaidBuffWindow()
         end
@@ -184,56 +185,6 @@ y = self:MinimapMenu_AddButton("Raid Buff Check", y, function()
         MCA:ShareSummary(MCA.lastReport)
     end)
 
-    y = y - 6
-
-    y = self:MinimapMenu_AddButton(
-        "Debug: " .. (MidnightCombatAnalyticsDB.config.debug and "ON" or "OFF"),
-        y,
-        function()
-            MidnightCombatAnalyticsDB.config.debug = not MidnightCombatAnalyticsDB.config.debug
-            MCA:Print("Debug " .. (MidnightCombatAnalyticsDB.config.debug and "ON" or "OFF"))
-        end,
-        MidnightCombatAnalyticsDB.config.debug and {0.2, 1, 0.2} or {1, 0.35, 0.35}
-    )
-
-    y = self:MinimapMenu_AddButton(
-        "Sync: " .. (MidnightCombatAnalyticsDB.config.syncEnabled and "ON" or "OFF"),
-        y,
-        function()
-            MidnightCombatAnalyticsDB.config.syncEnabled = not MidnightCombatAnalyticsDB.config.syncEnabled
-            if MidnightCombatAnalyticsDB.config.syncEnabled then MCA:SendHello() end
-            MCA:Print("Sync " .. (MidnightCombatAnalyticsDB.config.syncEnabled and "ON" or "OFF"))
-        end,
-        MidnightCombatAnalyticsDB.config.syncEnabled and {0.2, 1, 0.2} or {1, 0.35, 0.35}
-    )
-
-    y = self:MinimapMenu_AddButton(
-        "Auto Open: " .. (MidnightCombatAnalyticsDB.config.autoOpen and "ON" or "OFF"),
-        y,
-        function()
-            MidnightCombatAnalyticsDB.config.autoOpen = not MidnightCombatAnalyticsDB.config.autoOpen
-            MCA:Print("Auto Open " .. (MidnightCombatAnalyticsDB.config.autoOpen and "ON" or "OFF"))
-        end,
-        MidnightCombatAnalyticsDB.config.autoOpen and {0.2, 1, 0.2} or {1, 0.35, 0.35}
-    )
-
-    y = self:MinimapMenu_AddButton(
-        "ElvUI Skin: " .. (MidnightCombatAnalyticsDB.config.useElvUISkin and "ON" or "OFF"),
-        y,
-        function()
-            MidnightCombatAnalyticsDB.config.useElvUISkin = not MidnightCombatAnalyticsDB.config.useElvUISkin
-            MCA:DetectElvUI()
-            MCA:Print("ElvUI Skin " .. (MidnightCombatAnalyticsDB.config.useElvUISkin and "ON" or "OFF"))
-        end,
-        MidnightCombatAnalyticsDB.config.useElvUISkin and {0.2, 1, 0.2} or {1, 0.35, 0.35}
-    )
-
-    y = y - 6
-
-    y = self:MinimapMenu_AddButton("Nascondi bottone minimappa", y, function()
-        MCA:MinimapButton_SetShown(false)
-        MCA:Print("Bottone minimappa nascosto. Usa /mdr minimap per riattivarlo.")
-    end, {1, 0.65, 0.25})
 end
 
 function MCA:MinimapMenu_Toggle()
@@ -254,7 +205,7 @@ function MCA:CreateMinimapMenu()
     if self.MinimapMenu then return end
 
     local menu = CreateFrame("Frame", "MCAMinimapMenu", UIParent, "BackdropTemplate")
-    menu:SetSize(228, 328)
+    menu:SetSize(228, 190)
     menu:SetFrameStrata("DIALOG")
     menu:SetFrameLevel(100)
 
@@ -308,7 +259,7 @@ function MCA:CreateMinimapButton()
     local icon = button:CreateTexture(nil, "BACKGROUND")
     icon:SetSize(20, 20)
     icon:SetPoint("CENTER", 0, 1)
-    icon:SetTexture("Interface\\Icons\\INV_Misc_Orb_05")
+    icon:SetTexture("Interface\\AddOns\\RaidPulse\\Textures\\icon")
 
     button.icon = icon
 
@@ -335,7 +286,7 @@ function MCA:CreateMinimapButton()
             px, py = px / scale, py / scale
 
             local angle = math.deg(math.atan2(py - my, px - mx))
-            MidnightCombatAnalyticsDB.config.minimapAngle = angle
+            RaidPulseDB.config.minimapAngle = angle
             MCA:MinimapButton_UpdatePosition()
         end)
     end)
@@ -346,7 +297,7 @@ function MCA:CreateMinimapButton()
 
     button:SetScript("OnEnter", function()
         GameTooltip:SetOwner(button, "ANCHOR_LEFT")
-        GameTooltip:SetText("Midnight Combat Analytics")
+        GameTooltip:SetText("RaidPulse")
         GameTooltip:AddLine("Left click: menu", 0.8, 0.8, 0.8)
         GameTooltip:AddLine("Right click: ultimo report", 0.8, 0.8, 0.8)
         GameTooltip:AddLine("Drag: sposta bottone", 0.8, 0.8, 0.8)
@@ -361,7 +312,7 @@ function MCA:CreateMinimapButton()
     self:CreateMinimapMenu()
     self:MinimapButton_UpdatePosition()
 
-    if MidnightCombatAnalyticsDB.config.minimapButtonShown == false then
+    if RaidPulseDB.config.minimapButtonShown == false then
         button:Hide()
     else
         button:Show()

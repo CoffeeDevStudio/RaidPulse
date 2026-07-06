@@ -219,7 +219,7 @@ function MCA:BuildPlayerList(data)
         table.insert(list,p)
     end
     table.sort(list, function(a,b)
-        local sa, sb = MCA:GetScore(a), MCA:GetScore(b)
+        local sa, sb = MCA:GetDisplayRating(a), MCA:GetDisplayRating(b)
         if sa == sb then return (a.name or "") < (b.name or "") end
         return sa > sb
     end)
@@ -304,8 +304,7 @@ function MCA:MainFrame()
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
     self:SetBackdropSolid(f, self:UIColor("bg"), {0.28,0.28,0.30,1})
 
-    self:Text(f, "Midnight Combat Analytics v"..(self.VERSION or "?"), "GameFontHighlightLarge", {"TOP", f, "TOP", 0, -10}, 460, self:UIColor("accent"), "CENTER")
-    self:Text(f, "✦  •••  ×", "GameFontNormalLarge", {"TOPRIGHT", f, "TOPRIGHT", -18, -11}, 90, self:UIColor("gray"), "RIGHT")
+    self:Text(f, "RaidPulse v"..(self.VERSION or "?"), "GameFontHighlightLarge", {"TOP", f, "TOP", 0, -10}, 460, self:UIColor("accent"), "CENTER")
 
     return f
 end
@@ -354,7 +353,7 @@ function MCA:DrawSidebar(root)
     local emblem = side:CreateTexture(nil, "ARTWORK")
     emblem:SetPoint("TOPLEFT", 17, -17)
     emblem:SetSize(48,48)
-    emblem:SetTexture("Interface\\Icons\\INV_Misc_Orb_05")
+    emblem:SetTexture("Interface\\AddOns\\RaidPulse\\Textures\\icon")
 
     self:Text(side, "MCA", "GameFontHighlightLarge", {"TOPLEFT", side, "TOPLEFT", 72, -22}, 55, self:UIColor("accent"))
     self:Text(side, "v"..(self.VERSION or "?"), "GameFontNormalSmall", {"TOPLEFT", side, "TOPLEFT", 74, -47}, 55, self:UIColor("gray"))
@@ -362,7 +361,6 @@ function MCA:DrawSidebar(root)
     local tabs = {
         {"Riepilogo","summary"},
         {"Player","players"},
-        {"Interrupt","interrupts"},
         {"Deaths","deaths"},
         {"Timeline","timeline"},
         {"Storico","history"},
@@ -371,7 +369,7 @@ function MCA:DrawSidebar(root)
 
     local y = -92
     for _, tab in ipairs(tabs) do
-        local active = self.activeTab == tab[2]
+        local active = self.activeTab == tab[2] or (tab[2] == "players" and self.activeTab == "playerDetail")
         local b = CreateFrame("Button", nil, side, "BackdropTemplate")
         b:SetPoint("TOPLEFT", 8, y)
         b:SetSize(122, 34)
@@ -397,7 +395,7 @@ function MCA:DrawSidebar(root)
         y = y - 40
     end
 
-    self:Text(side, "Sync: "..(MidnightCombatAnalyticsDB.config.syncEnabled and "ON" or "OFF"), "GameFontNormal", {"BOTTOMLEFT", side, "BOTTOMLEFT", 14, 72}, 105, MidnightCombatAnalyticsDB.config.syncEnabled and self:UIColor("green") or self:UIColor("red"))
+    self:Text(side, "Sync: "..(RaidPulseDB.config.syncEnabled and "ON" or "OFF"), "GameFontNormal", {"BOTTOMLEFT", side, "BOTTOMLEFT", 14, 72}, 105, RaidPulseDB.config.syncEnabled and self:UIColor("green") or self:UIColor("red"))
 end
 
 
@@ -423,8 +421,8 @@ end
 function MCA:GetLastAvailableReport()
     if self.lastReport then return self.lastReport end
 
-    if MidnightCombatAnalyticsDB and MidnightCombatAnalyticsDB.history and #MidnightCombatAnalyticsDB.history > 0 then
-        return MidnightCombatAnalyticsDB.history[#MidnightCombatAnalyticsDB.history]
+    if RaidPulseDB and RaidPulseDB.history and #RaidPulseDB.history > 0 then
+        return RaidPulseDB.history[#RaidPulseDB.history]
     end
 
     return self:GetEmptyReport()
@@ -473,19 +471,19 @@ function MCA:DrawTopDashboard(root, data)
         {"Boss", totals.bossKilled.."/"..totals.bosses, self:UIColor("accent")},
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
         {"Deaths", tostring(totals.deaths), self:UIColor("red")},
-        {"CD Usati", tostring(totals.cds), self:UIColor("green")},
         {"Buff Raid", tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0), self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")},
         {"Punteggio", self:ComputeRaidScore(data).."%", self:UIColor("green")}
     }
+    local cellWidth = 126
     local x = 0
     for _, c in ipairs(cells) do
         local cell = CreateFrame("Frame", nil, kpis, "BackdropTemplate")
         cell:SetPoint("TOPLEFT", x, 0)
-        cell:SetSize(105, 64)
+        cell:SetSize(cellWidth, 64)
         self:SetBackdropSolid(cell, {0,0,0,0}, {0.17,0.18,0.19,1})
-        self:Text(cell, c[1], "GameFontNormal", {"TOP", cell, "TOP", 0, -11}, 90, self:UIColor("white"), "CENTER")
-        self:Text(cell, c[2], "GameFontHighlightLarge", {"TOP", cell, "TOP", 0, -34}, 90, c[3], "CENTER")
-        x = x + 105
+        self:Text(cell, c[1], "GameFontNormal", {"TOP", cell, "TOP", 0, -11}, cellWidth - 15, self:UIColor("white"), "CENTER")
+        self:Text(cell, c[2], "GameFontHighlightLarge", {"TOP", cell, "TOP", 0, -34}, cellWidth - 15, c[3], "CENTER")
+        x = x + cellWidth
     end
 
     local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 1118, -36}, 186, 64, {0.018,0.021,0.024,0.72})
@@ -521,39 +519,53 @@ end
 
 
 
-function MCA:DrawPlayerTable(parent, data)
-    self:Text(parent, "Player", "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -10}, 120, self:UIColor("accent"))
-
-    local search = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
-    search:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -30, -10)
-    search:SetSize(145, 22)
-    search:SetAutoFocus(false)
-    search:SetText("")
-    search:SetTextInsets(8, 8, 0, 0)
-    search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-    self:Text(parent, "Cerca player...", "GameFontNormalSmall", {"TOPRIGHT", search, "TOPLEFT", -6, -4}, 80, self:UIColor("gray"), "RIGHT")
-
+function MCA:DrawPlayerTable(parent, data, singlePlayer)
+    local topOffset = singlePlayer and -8 or -8
     local outerW = parent:GetWidth() - 16
-    local outerH = parent:GetHeight() - 50
-    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -40}, outerW, outerH, {0.018,0.020,0.022,0.55})
+    local outerH = parent:GetHeight() - (singlePlayer and 18 or 18)
+    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, topOffset}, outerW, outerH, {0.018,0.020,0.022,0.55})
 
     local tableW = outerW - 28
 
     -- Adaptive columns. Last column always ends inside tableW.
-    local cols = {
-        {label="#", x=6, w=22, justify="CENTER"},
-        {label="Player", x=36, w=140},
-        {label="Classe", x=188, w=116},
-        {label="Ruolo", x=314, w=58, justify="CENTER"},
-        {label="Morti", x=382, w=46, justify="CENTER"},
-        {label="Score", x=438, w=58, justify="CENTER"},
-        {label="Stato", x=508, w=math.max(tableW - 508, 70)}
-    }
+    -- In single-player detail mode the "Stato" column is removed and the
+    -- score column is relabeled "Rating", so it gets the remaining width.
+    -- In list mode the "Stato" column is replaced by the DPS/HPS metric and
+    -- "Score" is relabeled "Rating", mirroring the Riepilogo tables.
+    local cols
+    if singlePlayer then
+        cols = {
+            {label="#", x=6, w=22, justify="CENTER"},
+            {label="Player", x=36, w=140},
+            {label="Classe", x=188, w=116},
+            {label="Ruolo", x=314, w=58, justify="CENTER"},
+            {label="Morti", x=382, w=46, justify="CENTER"},
+            {label="Parse", x=438, w=math.max(tableW - 438, 70), justify="CENTER"}
+        }
+    else
+        cols = {
+            {label="#", x=6, w=22, justify="CENTER"},
+            {label="Player", x=36, w=140},
+            {label="Classe", x=188, w=116},
+            {label="Ruolo", x=314, w=58, justify="CENTER"},
+            {label="Morti", x=382, w=46, justify="CENTER"},
+            {label="DPS/HPS", x=438, w=90, justify="CENTER"},
+            {label="Parse", x=540, w=math.max(tableW - 540, 70), justify="CENTER"}
+        }
+    end
 
     local y = -2
     y = self:TableHeader(child, cols, y)
 
-    local list = self:BuildPlayerList(data)
+    local list
+    if singlePlayer then
+        list = {}
+        if self.selectedPlayer then table.insert(list, self.selectedPlayer) end
+    else
+        list = self:BuildPlayerList(data)
+        -- Populate mcaRating with the same values the Riepilogo role tables use.
+        if self.CalculateRoleRatings then self:CalculateRoleRatings(list) end
+    end
 
     for i, p in ipairs(list) do
         local row = CreateFrame("Button", nil, child, "BackdropTemplate")
@@ -572,19 +584,27 @@ function MCA:DrawPlayerTable(parent, data)
         self:Text(row, self:RoleShort(p.role), "GameFontNormalSmall", {"LEFT", row, "LEFT", 314, 0}, 58, self:UIColor("white"), "CENTER")
         self:Text(row, tostring(p.deaths or 0), "GameFontNormal", {"LEFT", row, "LEFT", 382, 0}, 46, (p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white"), "CENTER")
 
-        local score = self:GetScore(p)
-        local status, color = self:StatusForScore(score)
-        local shortStatus = status == "Ottimo" and "OK" or (status == "Buono" and "Good" or (status == "Discreto" and "Watch" or "Crit"))
+        if singlePlayer then
+            local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
+            local scoreCol = cols[6]
+            self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", scoreCol.x, 0}, scoreCol.w, parseColor, "CENTER")
+        else
+            -- Same data as the Riepilogo role tables.
+            local metricValue = self:GetFightMetric(p)
+            local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
+            local metricCol, ratingCol = cols[6], cols[7]
 
-        self:Text(row, score.."%", "GameFontNormal", {"LEFT", row, "LEFT", 438, 0}, 58, color, "CENTER")
-        self:StatusTexture(row, {"LEFT", row, "LEFT", 510, 0}, shortStatus)
-        self:Text(row, shortStatus, "GameFontNormalSmall", {"LEFT", row, "LEFT", 530, 0}, math.max(tableW - 530, 55), color)
+            self:Text(row, self:FormatMetricValue(metricValue), "GameFontNormal", {"LEFT", row, "LEFT", metricCol.x, 0}, metricCol.w, self:UIColor("white"), "CENTER")
+            self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", ratingCol.x, 0}, ratingCol.w, parseColor, "CENTER")
+        end
 
-        row:SetScript("OnClick", function()
-            MCA.selectedPlayer = p
-            MCA.activeTab = "summary"
-            MCA:BuildDashboard(data)
-        end)
+        if not singlePlayer then
+            row:SetScript("OnClick", function()
+                MCA.selectedPlayer = p
+                MCA.activeTab = "playerDetail"
+                MCA:BuildDashboard(data)
+            end)
+        end
 
         y = y - 28
     end
@@ -697,7 +717,7 @@ function MCA:DrawBossDetail(parent, data)
         self:Text(row, tostring(cds), "GameFontNormal", {"LEFT", row, "LEFT", 262, 0}, 35, self:UIColor("white"), "CENTER")
         self:Text(row, tostring(#(p.debuffs or {})), "GameFontNormal", {"LEFT", row, "LEFT", 312, 0}, 48, self:UIColor("white"), "CENTER")
 
-        local score = self:GetScore(p)
+        local score = self:GetDisplayRating(p)
         local _, c = self:StatusForScore(score)
         self:Text(row, score.."%", "GameFontNormal", {"LEFT", row, "LEFT", 380, 0}, 50, c, "CENTER")
 
@@ -788,17 +808,24 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows, 
     end
 end
 
-function MCA:BuildDeathsRows(data)
+function MCA:BuildDeathsRows(data, cols)
+    -- cols: optional {time, player, boss, extra} column defs {x,w}. When omitted,
+    -- falls back to the compact summary-card layout. This keeps the death rows
+    -- aligned with whatever header the caller draws (summary card vs full tab).
+    cols = cols or {
+        time   = {x=10,  w=55},
+        player = {x=76,  w=110},
+        boss   = {x=198, w=110},
+        extra  = {x=320, w=38}
+    }
     local rows = {}
     for _, p in pairs(data.players or {}) do
         if (p.deaths or 0) > 0 then
             table.insert(rows, {
-                {x=10, w=55, text=self:FormatTime(p.deathTime or 0), color=self:UIColor("white")},
-                {x=75, w=80, text=p.name or "?", color=self:UIColor("accent")},
-                {x=165, w=80, text=self:BossNameAtTime(data, p.deathTime or 0), color=self:UIColor("white")},
-                {x=260, w=40, text="-", color=self:UIColor("gray"), justify="CENTER"},
-                {x=315, w=40, text="0%", color=self:UIColor("white"), justify="CENTER"},
-                {x=365, w=60, text="-", color=self:UIColor("white"), justify="CENTER"}
+                {x=cols.time.x,   w=cols.time.w,   text=self:FormatTime(p.deathTime or 0), color=self:UIColor("white")},
+                {x=cols.player.x, w=cols.player.w, text=p.name or "?", color=self:UIColor("accent")},
+                {x=cols.boss.x,   w=cols.boss.w,   text=self:BossNameAtTime(data, p.deathTime or 0), color=self:UIColor("white")},
+                {x=cols.extra.x,  w=cols.extra.w,  text="-", color=self:UIColor("gray"), justify="CENTER"}
             })
         end
     end
@@ -828,17 +855,21 @@ function MCA:BuildDebuffRows(data)
     return rows
 end
 
-function MCA:BuildTimelineRows(data)
+function MCA:BuildTimelineRows(data, cols)
+    cols = cols or {
+        time   = {x=10, w=55},
+        event  = {x=76, w=210},
+        player = {x=300, w=90}
+    }
     local events = {}
     for _, e in ipairs(data.timeline or {}) do table.insert(events, e) end
     table.sort(events, function(a,b) return (a.time or 0) < (b.time or 0) end)
     local rows = {}
     for _, e in ipairs(events) do
         table.insert(rows, {
-            {x=10, w=55, text=self:FormatTime(e.time or 0), color=self:UIColor("white")},
-            {x=75, w=135, text=e.text or "Evento", spellID=e.spellID, color=e.type == "death" and self:UIColor("red") or self:UIColor("white")},
-            {x=240, w=75, text=e.player or "", color=self:UIColor("blue")},
-            {x=325, w=85, text=self:BossNameAtTime(data, e.time or 0), color=self:UIColor("white")}
+            {x=cols.time.x,   w=cols.time.w,   text=self:FormatTime(e.time or 0), color=self:UIColor("white")},
+            {x=cols.event.x,  w=cols.event.w,  text=e.text or "Evento", spellID=e.spellID, color=e.type == "death" and self:UIColor("red") or self:UIColor("white")},
+            {x=cols.player.x, w=cols.player.w, text=e.player or "", color=self:UIColor("blue")}
         })
     end
     return rows
@@ -941,7 +972,7 @@ end
 
 
 function MCA:DrawHistoryPage(parent)
-    local history = self.GetHistory and self:GetHistory() or (MidnightCombatAnalyticsDB.history or {})
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
 
     self:Text(parent, "Report salvati: " .. tostring(#history), "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 20, -20}, 240, self:UIColor("gray"))
 
@@ -993,7 +1024,7 @@ function MCA:DrawHistoryPage(parent)
         end)
 
         self:Button(row, "X", {"RIGHT", row, "RIGHT", -12, 0}, 28, 22, function()
-            table.remove(MidnightCombatAnalyticsDB.history, i)
+            table.remove(RaidPulseDB.history, i)
             MCA.activeTab = "history"
             MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
         end, true)
@@ -1016,7 +1047,7 @@ end
 function MCA:DrawFullPage(root, data)
     local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", 154, -112}, 1150, 535, {0.018,0.020,0.022,0.65})
 
-    local titleMap = {summary="Riepilogo", players="Player", deaths="Deaths", timeline="Timeline", history="Storico", settings="Impostazioni"}
+    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", timeline="Timeline", history="Storico", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
 
     self:Text(child, title, "GameFontHighlightLarge", {"TOPLEFT", child, "TOPLEFT", 16, -12}, 300, self:UIColor("accent"))
@@ -1035,9 +1066,9 @@ function MCA:DrawFullPage(root, data)
         }
 
         for _, s in ipairs(settings) do
-            self:Text(child, s[1]..": "..(MidnightCombatAnalyticsDB.config[s[2]] and "ON" or "OFF"), "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", 20, y}, 200, MidnightCombatAnalyticsDB.config[s[2]] and self:UIColor("green") or self:UIColor("red"))
+            self:Text(child, s[1]..": "..(RaidPulseDB.config[s[2]] and "ON" or "OFF"), "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", 20, y}, 200, RaidPulseDB.config[s[2]] and self:UIColor("green") or self:UIColor("red"))
             self:Button(child, "Toggle", {"TOPLEFT", child, "TOPLEFT", 240, y+4}, 90, 22, function()
-                MidnightCombatAnalyticsDB.config[s[2]] = not MidnightCombatAnalyticsDB.config[s[2]]
+                RaidPulseDB.config[s[2]] = not RaidPulseDB.config[s[2]]
                 MCA:BuildDashboard(data)
             end)
             y = y - 36
@@ -1048,13 +1079,24 @@ function MCA:DrawFullPage(root, data)
         self:DrawPlayerTable(panel, data)
         y = y - 450
 
+    elseif self.activeTab == "playerDetail" then
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        self:DrawPlayerTable(panel, data, true)
+        y = y - 450
+
     elseif self.activeTab == "interrupts" then
         self:BuildInterruptPage(content or page or body or frame, data)
     elseif self.activeTab == "deaths" then
         local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local deathCols = {
+            time   = {x=10,  w=70},
+            player = {x=90,  w=200},
+            boss   = {x=300, w=260},
+            extra  = {x=570, w=80}
+        }
         self:DrawSmallPanel(panel, "Deaths", nil, "red",
-            {{label="Tempo",x=10,w=55},{label="Player",x=75,w=100},{label="Boss",x=190,w=110},{label="Killer",x=320,w=90},{label="HP",x=430,w=60},{label="Def. Attiva",x=510,w=120}},
-            self:BuildDeathsRows(data), "Torna al riepilogo")
+            {{label="Tempo",x=deathCols.time.x,w=deathCols.time.w},{label="Player",x=deathCols.player.x,w=deathCols.player.w},{label="Boss",x=deathCols.boss.x,w=deathCols.boss.w},{label="HP",x=deathCols.extra.x,w=deathCols.extra.w,justify="CENTER"}},
+            self:BuildDeathsRows(data, deathCols), "Torna al riepilogo")
         y = y - 450
 
     elseif self.activeTab == "buffs" then
@@ -1066,9 +1108,14 @@ function MCA:DrawFullPage(root, data)
 
     elseif self.activeTab == "timeline" then
         local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local tlCols = {
+            time   = {x=10,  w=70},
+            event  = {x=90,  w=460},
+            player = {x=560, w=160}
+        }
         self:DrawSmallPanel(panel, "Timeline  (Eventi principali)", nil, "blue",
-            {{label="Tempo",x=10,w=55},{label="Evento",x=75,w=260},{label="Player",x=360,w=120},{label="Boss",x=500,w=130}},
-            self:BuildTimelineRows(data), "Torna al riepilogo")
+            {{label="Tempo",x=tlCols.time.x,w=tlCols.time.w},{label="Evento",x=tlCols.event.x,w=tlCols.event.w},{label="Player",x=tlCols.player.x,w=tlCols.player.w}},
+            self:BuildTimelineRows(data, tlCols), "Torna al riepilogo")
         y = y - 450
 
     elseif self.activeTab == "history" then
@@ -1148,8 +1195,9 @@ function MCA:CalculateRoleRatings(players)
         if maxValue and maxValue > 0 and value > 0 then
             p.mcaRating = math.floor(math.max(1, math.min(99, (value / maxValue) * 99)) + 0.5)
         else
-            -- Fallback until DPS/HPS source is implemented.
-            p.mcaRating = self:GetScore(p)
+            -- MCA: no DPS/HPS recorded for this player (value <= 0) -> rating must be 0,
+            -- never fall back to a stale GetScore() value.
+            p.mcaRating = 0
         end
     end
 end
@@ -1193,7 +1241,7 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
         {label="Classe", x=178, w=105},
         {label="Morti", x=292, w=44, justify="CENTER"},
         {label=metricLabel, x=348, w=72, justify="CENTER"},
-        {label="Rating", x=434, w=math.max(tableW - 434, 70), justify="CENTER"}
+        {label="Parse", x=434, w=math.max(tableW - 434, 70), justify="CENTER"}
     }
 
     local y = -2
@@ -1211,8 +1259,7 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
         row:SetSize(tableW, 28)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
 
-        local rating = p.mcaRating or self:GetScore(p)
-        local ratingColor = self:GetRatingColor(rating)
+        local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
 
         self:Text(row, tostring(i)..".", "GameFontNormal", {"LEFT", row, "LEFT", cols[1].x, 0}, cols[1].w, self:UIColor("white"), "CENTER")
 
@@ -1224,11 +1271,11 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
 
         self:Text(row, tostring(p.deaths or 0), "GameFontNormal", {"LEFT", row, "LEFT", cols[4].x, 0}, cols[4].w, (p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white"), "CENTER")
         self:Text(row, self:FormatMetricValue(self:GetFightMetric(p)), "GameFontNormal", {"LEFT", row, "LEFT", cols[5].x, 0}, cols[5].w, self:UIColor("white"), "CENTER")
-        self:Text(row, tostring(rating), "GameFontNormal", {"LEFT", row, "LEFT", cols[6].x, 0}, cols[6].w, ratingColor, "CENTER")
+        self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", cols[6].x, 0}, cols[6].w, parseColor, "CENTER")
 
         row:SetScript("OnClick", function()
             MCA.selectedPlayer = p
-            MCA.activeTab = "players"
+            MCA.activeTab = "playerDetail"
             MCA:BuildDashboard(data)
         end)
 
@@ -1239,7 +1286,10 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
 end
 
 function MCA:DrawDashboardPage(root, data)
-    -- v4.0.16 dashboard:
+    
+    -- MCA 4.3.4 force ratings in DrawDashboardPage
+    if self.ApplyClassBasedRatings and data then self:ApplyClassBasedRatings(data) end
+-- v4.0.16 dashboard:
     -- Top row: DPS/Tank table left, Healer/HPS table right.
     -- Bottom row: Deaths, Timeline, Boss Breakdown.
     local leftX, totalW = 154, 1152
@@ -1303,6 +1353,19 @@ function MCA:BuildDashboard(data)
     -- MCA 4.1.4: recalc class based ratings on report open
     if self.ApplyClassBasedRatings and data then self:ApplyClassBasedRatings(data) end
     if not data then return end
+
+    -- MCA 4.3.6 apply M+ deaths before dashboard render
+    if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(data) end
+
+    -- MCA 4.3.3 strict meter rating before render
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
+
+    -- MCA 4.3.0 force class ratings before any UI render
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
+
+    -- MCA 4.2.8: enforce final class-only ratings before rendering
+    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
+
     self.lastReport = data
 
     local old = _G.MCAFrame
@@ -1374,7 +1437,12 @@ end
 
 -- MCA 4.1.5 class-rating UI helpers
 function MCA:GetDisplayRating(player)
-    return tonumber(player and (player.classRating or player.rating or player.score) or 0) or 0
+    if not player then return 0 end
+    local r=tonumber(player.classRating or player.rating or player.score or 0) or 0
+    local d=tonumber(player.blizzardDps or player.dps or player.fightDPS or player.amountPerSecond or 0) or 0
+    local h=tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
+    if d<=0 and h<=0 then return 0 end
+    return r
 end
 
 
@@ -1386,6 +1454,8 @@ function MCA:BuildInterruptPage(parent, report)
     if not parent then return end
 
     self:Text(parent, "Interrupt", "GameFontNormalLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -12}, 180, self:UIColor("accent"))
+    -- MCA 4.2.6 interrupt disabled notice
+    self:Text(parent, "Interrupt temporaneamente disabilitati: build rebased su DPS/HPS stabile.", "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", 120, -16}, 560, self:UIColor("orange"))
 
     local list = self:GetSortedInterruptPlayers(report)
 
@@ -1468,4 +1538,82 @@ function MCA:BuildInterruptsTab(parent, report)
     if self.BuildInterruptPage then
         return self:BuildInterruptPage(parent, report)
     end
+end
+
+
+-- MCA 4.2.8 display rating helper in UI
+function MCA:GetDisplayRating(player)
+    if not player then return 0 end
+    local r=tonumber(player.classRating or player.rating or player.score or 0) or 0
+    local d=tonumber(player.blizzardDps or player.dps or player.fightDPS or player.amountPerSecond or 0) or 0
+    local h=tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
+    if d<=0 and h<=0 then return 0 end
+    return r
+end
+
+
+-- MCA 4.3.3 strict UI display rating override
+function MCA:GetDisplayRating(player)
+    if not player then return 0 end
+    local isHealer = tostring(player.role or player.ruolo or player.Role or ""):lower():find("heal") ~= nil
+    local value = 0
+    if isHealer then
+        value = tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
+    else
+        value = tonumber(player.blizzardDps or player.dps or player.fightDPS or player.damagePerSecond or player.amountPerSecond or 0) or 0
+    end
+    if value <= 0 then return 0 end
+    return tonumber(player.classRating or player.rating or player.score or 0) or 0
+end
+
+
+-- ============================================================================
+-- MCA 4.3.4 strict summary rating helpers
+-- Summary rows must never use stale row.score/rating fallbacks.
+-- ============================================================================
+
+function MCA:GetSummaryRatingForPlayer(player)
+    if not player then return 0 end
+    if self.ApplyClassBasedRatings and self.lastReport then
+        self:ApplyClassBasedRatings(self.lastReport)
+    end
+    return self:GetDisplayRating(player)
+end
+
+function MCA:GetPlayerMeterValueForDisplay(player, metric)
+    if not player then return 0 end
+    if metric == "hps" then
+        return tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
+    end
+    return tonumber(player.blizzardDps or player.dps or player.fightDPS or player.damagePerSecond or player.amountPerSecond or 0) or 0
+end
+
+function MCA:GetStrictRatingText(player, metric)
+    local value = self:GetPlayerMeterValueForDisplay(player, metric)
+    if not value or value <= 0 then return "0" end
+    return tostring(self:GetDisplayRating(player))
+end
+
+
+-- ============================================================================
+-- MCA 4.3.6 Mythic+ header helpers
+-- ============================================================================
+
+function MCA:GetHeaderDeathsValue(data)
+    if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(data) end
+    return tonumber(data and (data.totalDeaths or data.deaths or data.mplusDeathsTotal or 0) or 0) or 0
+end
+
+function MCA:GetHeaderCdOrDeathsLabel(data)
+    if self.IsMythicPlusData and self:IsMythicPlusData(data) then
+        return "Morti Totali"
+    end
+    return self:GetHeaderCdOrDeathsLabel(data)
+end
+
+function MCA:GetHeaderCdOrDeathsValue(data)
+    if self.IsMythicPlusData and self:IsMythicPlusData(data) then
+        return self:GetHeaderDeathsValue(data)
+    end
+    return tonumber(data and (self:GetHeaderCdOrDeathsValue(data)) or 0) or 0
 end

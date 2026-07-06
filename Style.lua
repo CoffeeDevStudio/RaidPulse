@@ -18,7 +18,7 @@ function MCA:DetectElvUI()
 end
 
 function MCA:IsElvUIAvailable()
-    return MidnightCombatAnalyticsDB.config.useElvUISkin and self.ElvUI ~= nil
+    return RaidPulseDB.config.useElvUISkin and self.ElvUI ~= nil
 end
 
 function MCA:ApplyFrameStyle(frame)

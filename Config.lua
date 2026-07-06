@@ -1,13 +1,11 @@
-SLASH_MCA1 = "/mca"
-SLASH_MCA2 = "/mdr"
-SlashCmdList["MCA"] = function(msg) if MCA and MCA.HandleSlash then MCA:HandleSlash(msg) end end
+-- RaidPulse — command handler
+-- Registers /rp with a rich subcommand set. Primary slash is /rp (short for
+-- RaidPulse); no legacy aliases here — Core.lua already declared SLASH_RAIDPULSE.
 
 _G.MCA = _G.MCA or {}
 MCA = _G.MCA
 
-SLASH_MDR1 = "/mdr"
-
-SlashCmdList["MCA"] = function(msg)
+SlashCmdList["RAIDPULSE"] = function(msg)
     msg = msg or ""
 
     if msg == "test" or msg == "mplus test" then
@@ -107,23 +105,23 @@ SlashCmdList["MCA"] = function(msg)
         if MCA.MinimapButton_SetShown then MCA:MinimapButton_SetShown(true) end
         MCA:Print("Bottone minimappa attivo.")
     elseif msg == "debug on" then
-        MidnightCombatAnalyticsDB.config.debug = true
+        RaidPulseDB.config.debug = true
         MCA:Print("debug ON")
     elseif msg == "debug off" then
-        MidnightCombatAnalyticsDB.config.debug = false
+        RaidPulseDB.config.debug = false
         MCA:Print("debug OFF")
     elseif msg == "sync on" then
-        MidnightCombatAnalyticsDB.config.syncEnabled = true
+        RaidPulseDB.config.syncEnabled = true
         MCA:SendHello()
         MCA:Print("sync ON")
     elseif msg == "sync off" then
-        MidnightCombatAnalyticsDB.config.syncEnabled = false
+        RaidPulseDB.config.syncEnabled = false
         MCA:Print("sync OFF")
     elseif msg == "export" then
         MCA:ShowExportWindow(MCA.lastReport)
     elseif msg == "share" then
         MCA:ShareSummary(MCA.lastReport)
     else
-        MCA:Print("Commands: /mdr test, /mdr show, /mdr minimap, /mdr debug on/off, /mdr sync on/off, /mdr export, /mdr share")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp sync on/off, /rp export, /rp share, /rp buffs")
     end
 end
