@@ -132,54 +132,95 @@ end
 -- Interpolate value against a v3 percentile curve. Percentiles are in the
 -- ref as keys "p99", "p95", ... in decreasing order matching decreasing DPS.
 -- Returns 0..99.
+--
+-- Compressed / truncated curves: when the paginated sample only covers the
+-- top of the real population (popular meta specs), the sample's observed
+-- p1 sits somewhere around the world's ~p50, not the world's p1. Detecting
+-- this heuristically (large sample + narrow spread OR explicit truncated
+-- flag), we remap the observed 1..99 range into a compressed world window
+-- COMPRESSED_MIN..99, applied CONSISTENTLY across the whole curve — not
+-- just the tail — so interpolation stays monotonic.
+local COMPRESSED_MIN = 50  -- observed p1 becomes world p50 when compressed
+
 local function percentileFromCurve(value, ref)
     if not ref or not value or value <= 0 then return 0 end
     local pcts = getCurvePercentiles()
 
+    -- Detect compression / truncation.
+    -- Primary signal: explicit flag written by newer generator.
+    -- Secondary signal: sample size at a round multiple of 100 AND >= 1500
+    -- indicates a global (non-bracketed) fetch that hit the pagination cap.
+    -- Bracket-scoped curves (raid-v5) already represent a specific ilvl
+    -- population, so we don't want to auto-compress them: doing so would
+    -- push everyone's parse upward unrealistically.
+    local compressed = ref.truncated == true
+    if not compressed then
+        local n = ref.sample or 0
+        if n >= 1500 and (n % 100 == 0) then
+            compressed = true
+        end
+    end
+
+    local function remap(observed_p)
+        if not compressed then return observed_p end
+        -- Map observed [1..99] linearly to world [COMPRESSED_MIN..99].
+        local t = (observed_p - 1) / 98
+        return COMPRESSED_MIN + t * (99 - COMPRESSED_MIN)
+    end
+
     -- Build ordered anchor list [{p=99, v=top}, {p=95, v=...}, ...] using
-    -- only percentiles that actually have a value in this ref.
+    -- only percentiles that actually have a value in this ref. Percentiles
+    -- are remapped if the curve is compressed.
     local anchors = {}
-    -- Top anchor (>= p99 value) — always add so the "top" ceiling clamps.
     if ref.top and ref.top > 0 then
         anchors[#anchors + 1] = { p = 99, v = ref.top }
     end
     for _, p in ipairs(pcts) do
         local v = ref["p" .. p]
         if type(v) == "number" and v > 0 then
-            -- Overwrite the top anchor's p99 if we also have an explicit p99.
+            local remapped = remap(p)
             if p == 99 and #anchors > 0 and anchors[1].p == 99 then
                 anchors[1].v = v
             else
-                anchors[#anchors + 1] = { p = p, v = v }
+                anchors[#anchors + 1] = { p = remapped, v = v }
             end
         end
     end
 
     if #anchors == 0 then return 0 end
 
-    -- Anchors are ordered by descending percentile (99 first, then 95, 90,
-    -- ..., 1) and each anchor's DPS should also be descending because higher
-    -- percentile = better rank = higher DPS.
     if value >= anchors[1].v then
-        return anchors[1].p
+        return math.floor(anchors[1].p + 0.5)
     end
 
-    -- Find the bracket [hi, lo] such that lo.v <= value < hi.v.
     for i = 1, #anchors - 1 do
         local hi = anchors[i]
         local lo = anchors[i + 1]
         if value < hi.v and value >= lo.v then
             local span = hi.v - lo.v
-            if span <= 0 then return lo.p end
+            if span <= 0 then return math.floor(lo.p + 0.5) end
             local t = (value - lo.v) / span
             return math.floor(lo.p + t * (hi.p - lo.p) + 0.5)
         end
     end
 
-    -- Value is below the lowest anchor: linearly to 0 from the lowest bucket.
-    local lowest = anchors[#anchors]
-    if lowest.v <= 0 then return 0 end
-    return math.floor(lowest.p * (value / lowest.v) + 0.5)
+    -- Below the lowest observed anchor. Extrapolate using ratio to TOP DPS.
+    -- The bracket sample stops at ~500 rankings which covers the top of the
+    -- bracket population but not the tail — so "p1 of our sample" is really
+    -- much higher in the world distribution than a literal 1st percentile.
+    -- We therefore do NOT cap at lowest.p; instead scale by ratio-to-top so
+    -- a player at 80% of top DPS gets ~74 (0.8^1.3 * 99), at 60% gets ~47,
+    -- at 40% gets ~24, monotonically decreasing to 0.
+    local top = anchors[1]
+    if top.v <= 0 then return 0 end
+
+    local ratio = value / top.v
+    if ratio <= 0 then return 0 end
+    if ratio >= 1 then return top.p end
+
+    local extrapolated = top.p * (ratio ^ 1.3)
+    if extrapolated < 0 then extrapolated = 0 end
+    return math.floor(extrapolated + 0.5)
 end
 
 -- v2 fallback: interpolate against 4 anchors (top / p95 / p75 / median).
@@ -216,22 +257,125 @@ local function computePercentile(value, ref)
     return percentileFromAnchors(value, ref)
 end
 
+-- Cache the local player's average item level so we don't hit
+-- GetAverageItemLevel on every render tick.
+local cachedIlvl = nil
+local function getLocalPlayerIlvl()
+    if cachedIlvl and cachedIlvl > 0 then return cachedIlvl end
+    if GetAverageItemLevel then
+        local overall = GetAverageItemLevel()
+        if overall and overall > 0 then
+            cachedIlvl = math.floor(overall + 0.5)
+            return cachedIlvl
+        end
+    end
+    return nil
+end
+
+-- Public: force a refresh of the cached ilvl (call after gear changes if
+-- needed). The addon can invoke MCA:InvalidateIlvlCache() from Session.lua
+-- when it re-reads the local player's roster entry.
+function MCA:InvalidateIlvlCache()
+    cachedIlvl = nil
+end
+
+-- Given a spec entry with a "brackets" table, pick the bracket whose
+-- [ilvlMin, ilvlMax) range contains the target ilvl. Uses two strategies:
+--   1) Fast path: if the report's zone has a `zoneBrackets` def in the DB
+--      (raid-v5+), compute bracket ID = ((ilvl - min) / bucket) + 1 and
+--      look up directly.
+--   2) Fallback: iterate brackets and match by ilvlMin/ilvlMax range, or
+--      pick the closest bracket by midpoint.
+-- Returns the bracket curve (with p99..p1) augmented with the spec metric.
+local function pickBracket(specEntry, targetIlvl, zoneId)
+    if not specEntry or type(specEntry.brackets) ~= "table" then return nil end
+    local brackets = specEntry.brackets
+
+    -- Fast path: compute bracket ID from zone bracket definition.
+    if targetIlvl and zoneId and MCA_Benchmarks and MCA_Benchmarks.zoneBrackets then
+        local zb = MCA_Benchmarks.zoneBrackets[zoneId]
+        if zb and zb.min and zb.bucket and zb.bucket > 0 then
+            local bid = math.floor((targetIlvl - zb.min) / zb.bucket) + 1
+            local b = brackets[bid]
+            if b then
+                local out = {}
+                for k, v in pairs(b) do out[k] = v end
+                out.metric = specEntry.metric
+                return out
+            end
+            -- Bracket doesn't exist for the exact ilvl (too few samples);
+            -- try adjacent brackets, preferring lower (safer) direction.
+            for delta = 1, 5 do
+                for _, tryBid in ipairs({bid - delta, bid + delta}) do
+                    local tb = brackets[tryBid]
+                    if tb then
+                        local out = {}
+                        for k, v in pairs(tb) do out[k] = v end
+                        out.metric = specEntry.metric
+                        return out
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback: match by ilvl range.
+    if targetIlvl then
+        for _, b in pairs(brackets) do
+            if b.ilvlMin and b.ilvlMax and targetIlvl >= b.ilvlMin and targetIlvl < b.ilvlMax then
+                local out = {}
+                for k, v in pairs(b) do out[k] = v end
+                out.metric = specEntry.metric
+                return out
+            end
+        end
+    end
+
+    -- Last resort: closest by midpoint distance.
+    local best, bestDist = nil, math.huge
+    for _, b in pairs(brackets) do
+        if b.ilvlMin and b.ilvlMax then
+            local mid = (b.ilvlMin + b.ilvlMax) / 2
+            local dist = targetIlvl and math.abs(mid - targetIlvl) or (500 - mid)
+            if dist < bestDist then
+                best, bestDist = b, dist
+            end
+        end
+    end
+
+    if best then
+        local out = {}
+        for k, v in pairs(best) do out[k] = v end
+        out.metric = specEntry.metric
+        return out
+    end
+    return nil
+end
+
 -- Given a class token (WoW) + role, return the aggregated reference by
--- averaging every spec entry of that class in the wanted metric.
--- Used when the player's specific spec is not known. Handles both the v2
--- 4-anchor schema and the v3 percentile-curve schema transparently by
--- averaging whatever numeric fields it finds.
-local function classFallbackRef(diffEntry, wclClass, wantMetric)
+-- averaging every spec entry of that class in the wanted metric. Used when
+-- the player's specific spec is not known.
+-- For bracket-aware entries (raid-v4) it picks the target bracket in each
+-- contributing spec and averages the resulting curves. For older schemas
+-- it averages the numeric fields directly.
+local function classFallbackRef(diffEntry, wclClass, wantMetric, targetIlvl, zoneId)
     if not diffEntry then return nil end
     local prefix = wclClass .. "-"
     local sums, count = {}, 0
 
     for key, ref in pairs(diffEntry) do
         if type(key) == "string" and key:sub(1, #prefix) == prefix and ref.metric == wantMetric then
-            count = count + 1
-            for k, v in pairs(ref) do
-                if type(v) == "number" then
-                    sums[k] = (sums[k] or 0) + v
+            -- If the entry has brackets, pick the matching one first.
+            local source = ref
+            if type(ref.brackets) == "table" then
+                source = pickBracket(ref, targetIlvl, zoneId)
+            end
+            if source then
+                count = count + 1
+                for k, v in pairs(source) do
+                    if type(v) == "number" then
+                        sums[k] = (sums[k] or 0) + v
+                    end
                 end
             end
         end
@@ -246,8 +390,8 @@ local function classFallbackRef(diffEntry, wclClass, wantMetric)
     return avg
 end
 
--- Public: get the reference row {top,p95,p75,median,metric} for a player
--- inside a given report. Returns nil if we can't match the report to the DB.
+-- Public: get the reference row for a player inside a given report.
+-- Returns nil if we can't match the report to the DB.
 function MCA:GetBenchmarkRef(player, data)
     if not player or not data then return nil end
 
@@ -265,18 +409,30 @@ function MCA:GetBenchmarkRef(player, data)
 
     local wantMetric = (tostring(player.role or ""):upper() == "HEALER") and "hps" or "dps"
 
+    -- Target ilvl: player's own if set (rare), otherwise the local player's
+    -- ilvl as a proxy (raid members are usually in the same range).
+    local targetIlvl = tonumber(player.ilvl) or getLocalPlayerIlvl()
+    local zoneId = enc.zoneId
+
     -- Try exact spec match first.
     local specName = player.wclSpec or self:SpecIDToWCLName(player.specID)
     if specName then
         local key = wclClass .. "-" .. specName
-        local ref = diffEntry[key]
-        if ref and ref.metric == wantMetric then
-            return ref, "spec"
+        local specEntry = diffEntry[key]
+        if specEntry and specEntry.metric == wantMetric then
+            -- New bracket-aware schema: pick the ilvl bracket first.
+            if type(specEntry.brackets) == "table" then
+                local ref = pickBracket(specEntry, targetIlvl, zoneId)
+                if ref then return ref, "spec" end
+            else
+                -- Older schema: use the entry directly.
+                return specEntry, "spec"
+            end
         end
     end
 
     -- Fall back to class-average for the wanted metric.
-    local ref = classFallbackRef(diffEntry, wclClass, wantMetric)
+    local ref = classFallbackRef(diffEntry, wclClass, wantMetric, targetIlvl, zoneId)
     if ref then return ref, "class-avg" end
 
     return nil

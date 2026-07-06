@@ -41,13 +41,16 @@ end)
 function MCA:PLAYER_LOGIN()
     self:InitSync()
     self:DetectElvUI()
+    if self.InitInspectSpec then self:InitInspectSpec() end
     self:UpdateRoster()
+    if self.InspectSpec_QueueGroup then self:InspectSpec_QueueGroup() end
     if self.CreateMinimapButton then self:CreateMinimapButton() end
     self:Print("Loaded v" .. self.VERSION .. " SafeFight")
 end
 
 function MCA:PLAYER_ENTERING_WORLD()
     self:UpdateRoster()
+    if self.InspectSpec_QueueGroup then self:InspectSpec_QueueGroup() end
 
     C_Timer.After(2, function()
         if MCA and MCA.SendHello then
@@ -58,6 +61,7 @@ end
 
 function MCA:GROUP_ROSTER_UPDATE()
     self:UpdateRoster()
+    if self.InspectSpec_QueueGroup then self:InspectSpec_QueueGroup() end
     self:SendHello()
 end
 

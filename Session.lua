@@ -41,6 +41,15 @@ function MCA:AddRosterUnit(unit)
                 self.roster[name].specID = specID
             end
         end
+    else
+        -- For other players, use the cached specID from previous inspects if
+        -- we have one; otherwise queue an inspect. The queue is throttled and
+        -- may take a few seconds per player.
+        if guid and self.specCache and self.specCache[guid] then
+            self.roster[name].specID = self.specCache[guid]
+        elseif self.InspectSpec_Queue then
+            self:InspectSpec_Queue(unit)
+        end
     end
 
     if guid then
@@ -75,6 +84,7 @@ function MCA:CopyRosterToSession()
         self.session.players[name] = self:CreateEmptyPlayer(p.name, p.class, p.role, p.guid, p.unit)
         self.session.players[name].hasAddon = p.hasAddon
         self.session.players[name].version = p.version
+        self.session.players[name].specID = p.specID
     end
 end
 
@@ -87,6 +97,10 @@ function MCA:EnsureSessionPlayer(name, class, role, guid)
         self.session.players[name] = self:CreateEmptyPlayer(name, class, role, guid, nil)
         self.session.players[name].hasAddon = true
         self.session.players[name].synced = true
+        -- If we already have this GUID's spec from the inspect cache, apply it.
+        if guid and self.specCache and self.specCache[guid] then
+            self.session.players[name].specID = self.specCache[guid]
+        end
     else
         local p = self.session.players[name]
         p.class = class or p.class
