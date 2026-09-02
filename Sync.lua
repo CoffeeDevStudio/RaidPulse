@@ -404,7 +404,7 @@ function MCA:HandleReportSyncMessage(kind, parts)
     end
 
     if kind == "REND" then
-        if self.lastReport == data and self.MainFrame and self.MainFrame:IsShown() then
+        if self.lastReport == data and _G.MCAFrame and _G.MCAFrame:IsShown() then
             -- Light refresh: redraw current report only if the report window is already open.
             self:BuildDashboard(data)
         end
