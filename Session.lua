@@ -654,16 +654,32 @@ function MCA:ApplyMythicPlusTotalDeaths(data)
     data.mplusDeathsTotal = total
 end
 
+-- Optional enrichment must never cost us the report itself.
+--
+-- A Raid Finder kill was lost exactly this way: boss-health sampling raised on
+-- a protected value, the error escaped FinalizeSession, and SaveReportToHistory
+-- further down never ran. Everything that merely decorates the session goes
+-- through here, so a failure downgrades the report instead of discarding it.
+local function tryStep(self, name, ...)
+    local fn = self[name]
+    if type(fn) ~= "function" then return end
+
+    local ok, err = pcall(fn, self, ...)
+    if not ok then
+        self:Debug("FinalizeSession: " .. name .. " failed: " .. tostring(err))
+    end
+end
+
 function MCA:FinalizeSession(success, forceImmediate)
     if not self.session then return end
 
     -- One last reading before the watcher stops: the ticker samples every
     -- 0.5s, and this catches the final sliver of health on a very close wipe.
     -- Harmless once the boss frames are gone — the sampler skips empty reads.
-    if self.SampleBossHealth then self:SampleBossHealth() end
-    if self.StopSessionWatcher then self:StopSessionWatcher() end
-    if self.ScanAllAuras then self:ScanAllAuras() end
-    if self.ScanAllDebuffs then self:ScanAllDebuffs() end
+    tryStep(self, "SampleBossHealth")
+    tryStep(self, "StopSessionWatcher")
+    tryStep(self, "ScanAllAuras")
+    tryStep(self, "ScanAllDebuffs")
 
     self.session.duration = GetTime() - self.session.start
     self.session.result = success == true
@@ -679,17 +695,18 @@ function MCA:FinalizeSession(success, forceImmediate)
     self.session.savedAtEpoch = self.session.savedAtEpoch or (time and time() or 0)
 
     self.session.difficulty = self.session.difficulty or self:GetCurrentRaidDifficultyLabel()
-    if self.CaptureDamageMeterStats then self:CaptureDamageMeterStats() end
+    -- Reads another addon's data, so it is as fallible as the health sampler.
+    tryStep(self, "CaptureDamageMeterStats")
 
     -- MCA 4.3.6 apply M+ total deaths before report
-    if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(self.session) end
+    tryStep(self, "ApplyMythicPlusTotalDeaths", self.session)
     local report = self:BuildReport(self.session)
 
     -- MCA 4.3.6 apply M+ total deaths after report
-    if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(report) end
+    tryStep(self, "ApplyMythicPlusTotalDeaths", report)
 
     -- MCA 4.3.5 late-joiner final rating pass
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
+    tryStep(self, "ApplyClassBasedRatings", report)
 
     self.lastReport = report
     self:SaveReportToHistory(report)
