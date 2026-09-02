@@ -117,8 +117,8 @@ local function processQueue()
     if UnitAffectingCombat and UnitAffectingCombat("player") then return end
     if IsFalling and IsFalling() then return end
 
-    local next = table.remove(inspectQueue, 1)
-    if not next then return end
+    local entry = table.remove(inspectQueue, 1)
+    if not entry then return end
 
     -- Refresh the unit token — it may have changed.
     local unit = findUnitByGUID(entry.guid) or entry.unit
