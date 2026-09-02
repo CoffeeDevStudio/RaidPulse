@@ -6,7 +6,8 @@ _G.MCA = _G.MCA or {}
 MCA = _G.MCA
 
 SlashCmdList["RAIDPULSE"] = function(msg)
-    msg = msg or ""
+    msg = string.lower(string.gsub(msg or "", "^%s*(.-)%s*$", "%1"))
+    msg = string.gsub(msg, "%s+", " ")
 
     if msg == "test" or msg == "mplus test" then
         local players = {
@@ -96,7 +97,7 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             }
         })
 
-    elseif msg == "show" then
+    elseif msg == "" or msg == "show" then
         if MCA.lastReport then MCA:ShowUI(MCA.lastReport) else MCA:Print("Nessun report disponibile.") end
     elseif msg == "buffs" or msg == "raidbuffs" then
         if MCA.ShowRaidBuffWindow then MCA:ShowRaidBuffWindow() end

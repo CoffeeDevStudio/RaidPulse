@@ -5,6 +5,7 @@ local f = CreateFrame("Frame")
 MCA.EventFrame = f
 
 local events = {
+    "ADDON_LOADED",
     "PLAYER_LOGIN",
     "PLAYER_REGEN_DISABLED",
     "PLAYER_ENTERING_WORLD",
@@ -37,6 +38,11 @@ end)
 -- SafeFight:
 -- No OnUpdate aura/debuff polling in combat.
 -- This avoids raid-wide Lua error spam on Midnight aura APIs.
+
+function MCA:ADDON_LOADED(addonName)
+    if addonName ~= "RaidPulse" then return end
+    self:InitDB()
+end
 
 function MCA:PLAYER_LOGIN()
     self:InitSync()

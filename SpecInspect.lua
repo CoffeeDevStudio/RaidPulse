@@ -44,8 +44,14 @@ local function findUnitByGUID(guid)
     return nil
 end
 
--- Apply a cached specID to the roster entry(-ies) with the given GUID.
+-- Apply a cached specID to the roster and session entry(-ies) with the given GUID.
 local function applyToRoster(guid, specID)
+    for _, p in pairs(MCA.roster or {}) do
+        if p.guid == guid and not p.specID then
+            p.specID = specID
+        end
+    end
+
     if not (MCA.session and MCA.session.players) then return end
     for _, p in pairs(MCA.session.players) do
         if p.guid == guid and not p.specID then
@@ -90,17 +96,17 @@ end
 
 local function processQueue()
     if inspectPending then return end
-    local next = table.remove(inspectQueue, 1)
-    if not next then return end
+    local entry = table.remove(inspectQueue, 1)
+    if not entry then return end
 
     -- Refresh the unit token — it may have changed.
-    local unit = findUnitByGUID(next.guid) or next.unit
+    local unit = findUnitByGUID(entry.guid) or entry.unit
     if not unit or not UnitExists(unit) then return end
     if not CanInspect(unit, false) then return end
 
     inspectPending = {
-        guid = next.guid, unit = unit,
-        sentAt = GetTime(), retries = next.retries,
+        guid = entry.guid, unit = unit,
+        sentAt = GetTime(), retries = entry.retries,
     }
 
     NotifyInspect(unit)

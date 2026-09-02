@@ -593,6 +593,10 @@ function MCA:CaptureDamageMeterStats()
     self.session.blizzard.dpsApplied = dpsApplied
     self.session.blizzard.hpsApplied = hpsApplied
 
+    if self.CaptureBlizzardInterrupts then
+        self:CaptureBlizzardInterrupts(self.session, sessionID)
+    end
+
     if self.Debug then
         self:Debug("Blizzard DamageMeter captured: sessionID=" .. tostring(sessionID) .. " dps=" .. tostring(dpsApplied) .. " hps=" .. tostring(hpsApplied))
     end
@@ -670,18 +674,6 @@ function MCA:FinalizeSession(success, forceImmediate)
     if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(report) end
 
     -- MCA 4.3.5 late-joiner final rating pass
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
-
-    -- MCA 4.3.4 final rating pass after report build
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
-
-    -- MCA 4.3.3 strict meter rating after report build
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
-
-    -- MCA 4.3.0 force class ratings after report build
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
-
-    -- MCA 4.2.8: apply final class-only ratings after BuildReport
     if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(report) end
 
     self.lastReport = report
