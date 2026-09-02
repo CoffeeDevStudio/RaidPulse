@@ -139,6 +139,7 @@ function MCA:StartRaidEncounter(id, name)
 
     self:CopyRosterToSession()
     self:SendHello()
+    if self.StartDeathWatcher then self:StartDeathWatcher() end
 
     self:Print("Raid encounter started: " .. tostring(name))
 end
@@ -193,6 +194,7 @@ function MCA:StartMythicPlusSession()
 
     self:CopyRosterToSession()
     self:SendHello()
+    if self.StartDeathWatcher then self:StartDeathWatcher() end
 
     self:Print("Mythic+ started")
 end
@@ -651,6 +653,7 @@ end
 function MCA:FinalizeSession(success, forceImmediate)
     if not self.session then return end
 
+    if self.StopDeathWatcher then self:StopDeathWatcher() end
     if self.ScanAllAuras then self:ScanAllAuras() end
     if self.ScanAllDebuffs then self:ScanAllDebuffs() end
 

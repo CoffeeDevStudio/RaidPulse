@@ -17,15 +17,18 @@ local events = {
     "CHALLENGE_MODE_RESET",
     "CHAT_MSG_ADDON",
     "PLAYER_DEAD",
+    "PLAYER_LEAVING_WORLD",
     "UNIT_SPELLCAST_SUCCEEDED",
     -- COMBAT_LOG_EVENT_UNFILTERED intentionally NOT registered here.
     -- In patch 12.0.7 (Midnight) registering CLEU from a non-Blizzard addon
     -- raises "Frame:RegisterEvent() forbidden". The popup is cosmetic (the
-    -- addon still works) but very annoying. Trade-off: we lose the precise
-    -- killing-blow tracking that the CLEU handler in Trackers.lua was doing.
-    -- Deaths are still detected via PLAYER_DEAD (for the local player) and
-    -- via the periodic UnitIsDeadOrGhost checks in Trackers.lua for group
-    -- members. Cause-of-death text will fall back to "<name> muore".
+    -- addon still works) but very annoying.
+    --
+    -- Deaths are instead detected by the polling death watcher in Trackers.lua
+    -- (started with the session), and the cause of death comes from Blizzard's
+    -- own death recap (C_DeathInfo) for the local player, which every RaidPulse
+    -- user then broadcasts to the group over DCAUSE. The only thing still lost
+    -- versus CLEU is the cause of death for players who don't run the addon.
 }
 
 -- Register a single event to bootstrap: ADDON_LOADED. Everything else is

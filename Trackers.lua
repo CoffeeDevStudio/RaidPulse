@@ -65,6 +65,81 @@ function MCA:UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID)
     self:RecordDefensive(player, spellID, "cast")
 end
 
+-- Apply cause-of-death info to a death timeline event, mirroring it onto the
+-- player record. Safe to call after the event was already inserted: the
+-- timeline stores the table by reference, so a cause that only becomes
+-- available a moment later (death recap, addon sync) still reaches the UI.
+function MCA:DecorateDeathEvent(ev, cause, player)
+    if not ev then return end
+
+    -- An empty spell name is truthy in Lua, and sync messages can carry one,
+    -- so check for actual content before claiming we know the cause.
+    if cause and type(cause.spellName) == "string" and cause.spellName ~= "" then
+        ev.spellID    = cause.spellID
+        ev.spellName  = cause.spellName
+        ev.amount     = cause.amount
+        ev.sourceName = cause.sourceName
+        ev.text = string.format("%s muore (%s: %s)",
+            ev.player or "?", cause.spellName or "?",
+            self.FormatMetricValue and self:FormatMetricValue(cause.amount or 0) or tostring(cause.amount or "?"))
+        if player then
+            player.deathSpellID   = cause.spellID
+            player.deathSpellName = cause.spellName
+            player.deathAmount    = cause.amount
+            player.deathSource    = cause.sourceName
+        end
+    else
+        ev.text = (ev.player or "?") .. " muore"
+    end
+end
+
+-- Find the death event already recorded for a player, so a late-arriving
+-- cause can be attached to it instead of adding a second line.
+function MCA:FindDeathEvent(name)
+    if not self.session or not self.session.timeline then return nil end
+    for i = #self.session.timeline, 1, -1 do
+        local ev = self.session.timeline[i]
+        if ev and ev.type == "death" and ev.player == name then return ev end
+    end
+    return nil
+end
+
+-- Cause of death for the LOCAL player, read from Blizzard's death recap.
+-- This is the CLEU-free replacement for the killing-blow tracking we had to
+-- drop in 12.0.7 (see the comment block in Events.lua): C_DeathInfo is a
+-- Blizzard-maintained log of the last hits the player took, so reading it
+-- needs no combat-log event registration at all.
+--
+-- The recap is populated slightly *after* the death fires, so callers must
+-- read it with a small delay rather than inline in PLAYER_DEAD.
+function MCA:GetLocalDeathCause()
+    if not C_DeathInfo or not C_DeathInfo.GetRecapEvents then return nil end
+
+    local ok, events = pcall(C_DeathInfo.GetRecapEvents, 1)
+    if not ok or type(events) ~= "table" then return nil end
+
+    -- Recap entries run oldest -> newest; the killing blow is the last one
+    -- that actually did damage.
+    for i = #events, 1, -1 do
+        local e = events[i]
+        local amount = tonumber(e and e.amount) or 0
+        if amount > 0 then
+            local spellID = tonumber(e.spellId or e.spellID) or 0
+            local spellName = e.spellName
+            if not spellName and spellID > 0 and self.GetSpellNameSafe then
+                spellName = self:GetSpellNameSafe(spellID)
+            end
+            return {
+                spellID    = spellID,
+                spellName  = spellName or "?",
+                amount     = amount,
+                sourceName = e.sourceName or e.caster,
+            }
+        end
+    end
+    return nil
+end
+
 function MCA:MarkDead(unit)
     if not self.session or not UnitExists(unit) or not UnitIsDeadOrGhost(unit) then return end
 
@@ -79,34 +154,66 @@ function MCA:MarkDead(unit)
     player.deadSeen = true
     player.deathTime = GetTime() - self.session.start
 
-    -- If we tracked a killing blow via the combat log, attach spell + damage
-    -- info so the timeline can render a full cause of death.
+    -- If the optional combat-log handler tracked a killing blow, use it.
     local cause = self.lastHitByGUID and self.lastHitByGUID[UnitGUID(unit) or ""]
 
-    local ev = {
-        type = "death",
-        time = player.deathTime,
-        player = name,
-    }
-    if cause then
-        ev.spellID    = cause.spellID
-        ev.spellName  = cause.spellName
-        ev.amount     = cause.amount
-        ev.sourceName = cause.sourceName
-        player.deathSpellID   = cause.spellID
-        player.deathSpellName = cause.spellName
-        player.deathAmount    = cause.amount
-        player.deathSource    = cause.sourceName
-        ev.text = string.format("%s muore (%s: %s)",
-            name, cause.spellName or "?",
-            self.FormatMetricValue and self:FormatMetricValue(cause.amount or 0) or tostring(cause.amount or "?"))
-    else
-        ev.text = name .. " muore"
-    end
+    local ev = { type = "death", time = player.deathTime, player = name }
+    self:DecorateDeathEvent(ev, cause, player)
     self:AddTimelineEvent(ev)
 
     if name == UnitName("player") then
-        self:SendDeath(player.deathTime)
+        local deathTime = player.deathTime
+        self:SendDeath(deathTime)
+
+        -- Then look up our own recap once it has filled in, patch the event we
+        -- just inserted, and tell the rest of the group what killed us so their
+        -- timeline shows the cause too.
+        if not cause then
+            C_Timer.After(0.6, function()
+                if not MCA then return end
+                local recap = MCA:GetLocalDeathCause()
+                if not recap then return end
+                MCA:DecorateDeathEvent(ev, recap, player)
+                if MCA.SendDeathCause then MCA:SendDeathCause(deathTime, recap) end
+            end)
+        end
+    end
+end
+
+-- Death watcher.
+-- 12.0.7 forbids COMBAT_LOG_EVENT_UNFILTERED registration for addons (see
+-- Events.lua) and registering UNIT_HEALTH raised the same popup on some
+-- clients, so group deaths are found by polling instead. Half a second is far
+-- finer than anything read off the timeline, and the ticker only walks the
+-- roster while a session is actually running.
+local DEATH_POLL_INTERVAL = 0.5
+local deathTicker = nil
+
+local function pollGroupDeaths()
+    if not MCA or not MCA.session then return end
+
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do
+            MCA:MarkDead("raid" .. i)
+        end
+    else
+        MCA:MarkDead("player")
+        for i = 1, math.max(0, GetNumGroupMembers() - 1) do
+            MCA:MarkDead("party" .. i)
+        end
+    end
+end
+
+function MCA:StartDeathWatcher()
+    self:StopDeathWatcher()
+    if not C_Timer or not C_Timer.NewTicker then return end
+    deathTicker = C_Timer.NewTicker(DEATH_POLL_INTERVAL, pollGroupDeaths)
+end
+
+function MCA:StopDeathWatcher()
+    if deathTicker then
+        deathTicker:Cancel()
+        deathTicker = nil
     end
 end
 
@@ -114,6 +221,13 @@ end
 -- source, spell and amount so the death timeline can display cause + damage.
 -- We only track damage to units that are in our session roster (raid members
 -- with a matching GUID), so the table stays small.
+--
+-- NOTE: this handler is deliberately NOT wired up — Events.lua does not
+-- register COMBAT_LOG_EVENT_UNFILTERED on 12.0.7 because doing so raises the
+-- "action blocked" popup. It is kept because it is the only way to get a cause
+-- of death for players who are not running RaidPulse themselves; the supported
+-- path is GetLocalDeathCause + SendDeathCause, which covers the local player
+-- always and group members who have the addon.
 function MCA:COMBAT_LOG_EVENT_UNFILTERED()
     if not self.session or not CombatLogGetCurrentEventInfo then return end
     local _, subevent, _, _, sourceName, _, _, destGUID, destName, _, _,
@@ -178,30 +292,15 @@ function MCA:COMBAT_LOG_EVENT_UNFILTERED()
             if not players then return end
             local ok, p = pcall(rawget, players, name)
             if not ok or not p or p.deadSeen then return end
+
             -- Fall back: mark without a unit token by writing directly.
-            do
-                p.deaths = (p.deaths or 0) + 1
-                p.deadSeen = true
-                p.deathTime = GetTime() - self.session.start
-                local cause = self.lastHitByGUID and self.lastHitByGUID[destGUID]
-                local ev = { type = "death", time = p.deathTime, player = name }
-                if cause then
-                    ev.spellID = cause.spellID
-                    ev.spellName = cause.spellName
-                    ev.amount = cause.amount
-                    ev.sourceName = cause.sourceName
-                    ev.text = string.format("%s muore (%s: %s)",
-                        name, cause.spellName or "?",
-                        self.FormatMetricValue and self:FormatMetricValue(cause.amount or 0) or tostring(cause.amount or "?"))
-                    p.deathSpellID = cause.spellID
-                    p.deathSpellName = cause.spellName
-                    p.deathAmount = cause.amount
-                    p.deathSource = cause.sourceName
-                else
-                    ev.text = name .. " muore"
-                end
-                self:AddTimelineEvent(ev)
-            end
+            p.deaths = (p.deaths or 0) + 1
+            p.deadSeen = true
+            p.deathTime = GetTime() - self.session.start
+
+            local ev = { type = "death", time = p.deathTime, player = name }
+            self:DecorateDeathEvent(ev, self.lastHitByGUID and self.lastHitByGUID[destGUID], p)
+            self:AddTimelineEvent(ev)
         end
     end
 end

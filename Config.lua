@@ -122,7 +122,42 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         MCA:ShowExportWindow(MCA.lastReport)
     elseif msg == "share" then
         MCA:ShareSummary(MCA.lastReport)
+    elseif msg == "parse" then
+        -- Diagnostic: which benchmark DB is loaded, and does it actually cover
+        -- the fight we last recorded? Without this, a season change looks
+        -- exactly like a bug — every parse silently reads "-".
+        local db = _G.RaidPulse_Benchmarks
+        if type(db) ~= "table" then
+            MCA:Print("Benchmarks: NON caricati (BenchmarksDB.lua mancante o non valido).")
+        else
+            local encCount = 0
+            for _ in pairs(db.encounters or {}) do encCount = encCount + 1 end
+            local zones = {}
+            for _, z in ipairs(db.zones or {}) do zones[#zones + 1] = tostring(z) end
+            MCA:Print(string.format("Benchmarks: schema=%s season=%s zone=%s encounter=%d generato=%s",
+                tostring(db.schema or "?"), tostring(db.season or "?"),
+                (#zones > 0 and table.concat(zones, ",") or "?"), encCount,
+                tostring(db.generated or "?")))
+
+            local rep = MCA.lastReport
+            if not rep then
+                MCA:Print("  Nessun report recente da confrontare.")
+            elseif rep.type ~= "raid" then
+                MCA:Print("  Ultimo report: " .. tostring(rep.boss) ..
+                    " (M+ — i parse coprono solo i raid).")
+            else
+                local enc = (db.encounters or {})[rep.encounterID or -1]
+                if enc then
+                    MCA:Print("  Ultimo report: " .. tostring(rep.boss) ..
+                        " -> coperto dal DB (" .. tostring(enc.zoneName or "?") .. ").")
+                else
+                    MCA:Print("  Ultimo report: " .. tostring(rep.boss) ..
+                        " (encounterID " .. tostring(rep.encounterID) ..
+                        ") -> NON nel DB: rigenera BenchmarksDB per questa stagione.")
+                end
+            end
+        end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp sync on/off, /rp export, /rp share, /rp buffs")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp sync on/off, /rp export, /rp share, /rp buffs, /rp parse")
     end
 end
