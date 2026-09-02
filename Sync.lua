@@ -86,6 +86,26 @@ function MCA:SendDeath(time)
     }, "|"))
 end
 
+-- Broadcast what killed us, as a follow-up to the DEATH message. It is sent
+-- separately because the death itself is reported immediately while the cause
+-- only becomes readable from the death recap a moment later; splitting them
+-- keeps the death count instant and lets the cause catch up. Clients that
+-- don't know this message type ignore it.
+function MCA:SendDeathCause(time, cause)
+    local name = self:GetPlayerIdentity()
+    if not name or not cause then return end
+
+    self:SendAddon(table.concat({
+        "DCAUSE",
+        name,
+        tostring(time or 0),
+        tostring(cause.spellID or 0),
+        tostring(cause.spellName or "?"),
+        tostring(math.floor(tonumber(cause.amount) or 0)),
+        tostring(cause.sourceName or "")
+    }, "|"))
+end
+
 function MCA:SplitMessage(msg)
     local parts = {}
     msg = tostring(msg or "")
@@ -159,6 +179,29 @@ function MCA:CHAT_MSG_ADDON(prefix, msg)
                 text = p.name .. " muore"
             })
         end
+        return
+    end
+
+    if kind == "DCAUSE" then
+        local name = parts[2]
+        if not name or not self.FindDeathEvent then return end
+
+        local ev = self:FindDeathEvent(name)
+        if not ev then return end
+
+        local players = self.session.players
+        local player = nil
+        if players then
+            local ok, found = pcall(rawget, players, name)
+            if ok then player = found end
+        end
+
+        self:DecorateDeathEvent(ev, {
+            spellID    = tonumber(parts[4]) or 0,
+            spellName  = parts[5],
+            amount     = tonumber(parts[6]) or 0,
+            sourceName = parts[7],
+        }, player)
     end
 end
 

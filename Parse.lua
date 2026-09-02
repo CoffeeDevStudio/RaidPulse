@@ -225,21 +225,26 @@ local function percentileFromCurve(value, ref)
         end
     end
 
-    -- Below the lowest observed anchor. Extrapolate using ratio to TOP DPS.
-    -- The bracket sample stops at ~500 rankings which covers the top of the
-    -- bracket population but not the tail — so "p1 of our sample" is really
-    -- much higher in the world distribution than a literal 1st percentile.
-    -- We therefore do NOT cap at lowest.p; instead scale by ratio-to-top so
-    -- a player at 80% of top DPS gets ~74 (0.8^1.3 * 99), at 60% gets ~47,
-    -- at 40% gets ~24, monotonically decreasing to 0.
-    local top = anchors[1]
-    if top.v <= 0 then return 0 end
+    -- Below the lowest observed anchor. The bracket sample only covers the top
+    -- of the bracket population, so "p1 of our sample" is not a literal 1st
+    -- percentile and we must keep going down rather than clamping there.
+    --
+    -- Extrapolate from the LOWEST anchor, not from the top one: anchoring on
+    -- the top makes the curve jump when it crosses the last anchor, because
+    -- the anchors are remapped for compressed curves while a top-anchored
+    -- ratio is not. On a wide curve (floor 20) a player exactly at p1 scored
+    -- 20 while a player one point of DPS below it scored ~40 — the parse went
+    -- UP as the DPS went DOWN. Scaling from the lowest anchor is continuous
+    -- there by construction (ratio = 1 gives back lowest.p) and still decays
+    -- monotonically to 0.
+    local lowest = anchors[#anchors]
+    if lowest.v <= 0 then return 0 end
 
-    local ratio = value / top.v
+    local ratio = value / lowest.v
     if ratio <= 0 then return 0 end
-    if ratio >= 1 then return top.p end
+    if ratio >= 1 then return math.floor(lowest.p + 0.5) end
 
-    local extrapolated = top.p * (ratio ^ 1.3)
+    local extrapolated = lowest.p * (ratio ^ 1.3)
     if extrapolated < 0 then extrapolated = 0 end
     return math.floor(extrapolated + 0.5)
 end
@@ -382,7 +387,7 @@ end
 local function classFallbackRef(diffEntry, wclClass, wantMetric, targetIlvl, zoneId)
     if not diffEntry then return nil end
     local prefix = wclClass .. "-"
-    local sums, count = {}, 0
+    local sums, count, truncatedCount = {}, 0, 0
 
     for key, ref in pairs(diffEntry) do
         if type(key) == "string" and key:sub(1, #prefix) == prefix and ref.metric == wantMetric then
@@ -393,6 +398,9 @@ local function classFallbackRef(diffEntry, wclClass, wantMetric, targetIlvl, zon
             end
             if source then
                 count = count + 1
+                if source.truncated == true then
+                    truncatedCount = truncatedCount + 1
+                end
                 for k, v in pairs(source) do
                     if type(v) == "number" then
                         sums[k] = (sums[k] or 0) + v
@@ -404,10 +412,24 @@ local function classFallbackRef(diffEntry, wclClass, wantMetric, targetIlvl, zon
 
     if count == 0 then return nil end
 
-    local avg = { metric = wantMetric, sample = count }
+    local avg = { metric = wantMetric }
     for k, total in pairs(sums) do
         avg[k] = total / count
     end
+
+    -- `truncated` is a boolean, so it is not picked up by the numeric averaging
+    -- above and has to be carried over explicitly. Without this the averaged
+    -- curve looked like a complete sample to percentileFromCurve, which then
+    -- skipped the compressed-curve remap entirely — that is why players whose
+    -- spec we could not identify scored far below their real parse.
+    if truncatedCount * 2 >= count then
+        avg.truncated = true
+    end
+
+    -- Averaged sample size, so the truncation heuristics downstream still see
+    -- a realistic per-spec magnitude rather than the number of specs merged.
+    avg.sample = math.floor((sums.sample or 0) / count + 0.5)
+    avg.specsMerged = count
     return avg
 end
 
