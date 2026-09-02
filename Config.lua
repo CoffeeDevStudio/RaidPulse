@@ -122,6 +122,8 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         MCA:ShowExportWindow(MCA.lastReport)
     elseif msg == "share" then
         MCA:ShareSummary(MCA.lastReport)
+    elseif msg == "watcher" or msg == "deaths" then
+        if MCA.ReportWatcherState then MCA:ReportWatcherState() end
     elseif msg == "parse" then
         -- Diagnostic: which benchmark DB is loaded, and does it actually cover
         -- the fight we last recorded? Without this, a season change looks
@@ -158,6 +160,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             end
         end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp sync on/off, /rp export, /rp share, /rp buffs, /rp parse")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp sync on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher")
     end
 end

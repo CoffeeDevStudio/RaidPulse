@@ -223,19 +223,44 @@ end
 local POLL_INTERVAL = 0.5
 local sessionTicker = nil
 
+-- Clear the once-per-death latch when someone is back on their feet, so a
+-- battle rez followed by a second death is counted as two deaths. Without this
+-- a Mythic+ run reports at most one death per player for the whole key.
+function MCA:ClearDeadFlagIfAlive(unit)
+    if not self.session or not UnitExists(unit) then return end
+    if UnitIsDeadOrGhost(unit) then return end
+
+    local name = UnitName(unit)
+    if type(name) ~= "string" then return end
+    local players = self.session.players
+    if not players then return end
+
+    local ok, player = pcall(rawget, players, name)
+    if ok and player and player.deadSeen then
+        player.deadSeen = false
+    end
+end
+
+local function visitGroupUnits(fn)
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do
+            fn("raid" .. i)
+        end
+    else
+        fn("player")
+        for i = 1, math.max(0, GetNumGroupMembers() - 1) do
+            fn("party" .. i)
+        end
+    end
+end
+
 local function pollSession()
     if not MCA or not MCA.session then return end
 
-    if IsInRaid() then
-        for i = 1, GetNumGroupMembers() do
-            MCA:MarkDead("raid" .. i)
-        end
-    else
-        MCA:MarkDead("player")
-        for i = 1, math.max(0, GetNumGroupMembers() - 1) do
-            MCA:MarkDead("party" .. i)
-        end
-    end
+    visitGroupUnits(function(unit)
+        MCA:MarkDead(unit)
+        MCA:ClearDeadFlagIfAlive(unit)
+    end)
 
     MCA:SampleBossHealth()
 end
@@ -251,6 +276,47 @@ function MCA:StopSessionWatcher()
         sessionTicker:Cancel()
         sessionTicker = nil
     end
+end
+
+-- Diagnostic for /rp watcher. Death detection depends on four things lining
+-- up — a live session, a running ticker, a roster entry keyed by the unit's
+-- name, and the dead flag — and when it silently records nothing there is no
+-- way to tell which one broke by looking at the report.
+function MCA:ReportWatcherState()
+    self:Print(string.format("Watcher: %s | sessione: %s",
+        sessionTicker and "attivo" or "FERMO",
+        self.session and (tostring(self.session.type) .. " (" ..
+            tostring(self.session.boss) .. ")") or "nessuna"))
+
+    if not self.session then
+        self:Print("  Nessuna sessione: le morti si registrano solo durante un "
+            .. "encounter o una chiave M+.")
+        return
+    end
+
+    local players = self.session.players or {}
+    local rosterCount = 0
+    for _ in pairs(players) do rosterCount = rosterCount + 1 end
+    self:Print(string.format("  Gruppo: %d membri, IsInRaid=%s | roster sessione: %d",
+        GetNumGroupMembers() or 0, tostring(IsInRaid() and true or false), rosterCount))
+
+    visitGroupUnits(function(unit)
+        if not UnitExists(unit) then return end
+        local name = UnitName(unit)
+        if type(name) ~= "string" then
+            self:Print("  " .. unit .. ": nome non leggibile")
+            return
+        end
+        local ok, p = pcall(rawget, players, name)
+        local dead = UnitIsDeadOrGhost(unit) and true or false
+        if not ok or not p then
+            self:Print(string.format("  %s (%s): NON nel roster della sessione "
+                .. "-- le sue morti non verranno contate", unit, name))
+        else
+            self:Print(string.format("  %s (%s): morto=%s deadSeen=%s conteggio=%d",
+                unit, name, tostring(dead), tostring(p.deadSeen or false), p.deaths or 0))
+        end
+    end)
 end
 
 -- Track the last damaging hit received by each raid member's GUID. We store
