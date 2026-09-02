@@ -1088,7 +1088,7 @@ function MCA:DrawHistoryPage(parent)
     self:Text(header, "Modalità", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 510, 0}, 130, self:UIColor("white"))
     self:Text(header, "Durata", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 660, 0}, 70, self:UIColor("white"))
     self:Text(header, "Esito", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 750, 0}, 70, self:UIColor("white"))
-    self:Text(header, "Score", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
+    self:Text(header, "Boss HP", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
 
     local y = -124
     local rowIndex = 0
@@ -1111,7 +1111,6 @@ function MCA:DrawHistoryPage(parent)
         row:SetSize(1060, 30)
         self:SetBackdropSolid(row, rowIndex % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
 
-        local score = self.ComputeRaidScore and self:ComputeRaidScore(report) or 0
         local resultText = isKill and "Kill" or "Wipe"
 
         self:Text(row, report.savedAt or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 10, 0}, 120, self:UIColor("gray"))
@@ -1120,7 +1119,7 @@ function MCA:DrawHistoryPage(parent)
         self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510, 0}, 130, self:GetDifficultyColor(report.difficulty))
         self:Text(row, self:FormatTime(report.duration or 0), "GameFontNormalSmall", {"LEFT", row, "LEFT", 660, 0}, 70, self:UIColor("white"))
         self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750, 0}, 70, isKill and self:UIColor("green") or self:UIColor("red"))
-        self:Text(row, tostring(score).."%", "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, score >= 75 and self:UIColor("green") or self:UIColor("orange"))
+        self:Text(row, self:FormatBossHealth(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, self:GetBossHealthColor(report))
 
         self:Button(row, "Apri", {"RIGHT", row, "RIGHT", -84, 0}, 64, 22, function()
             MCA.activeTab = "summary"
