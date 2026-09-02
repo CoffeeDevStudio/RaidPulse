@@ -522,10 +522,22 @@ end
 -- Sub-1% wipes keep a decimal on purpose. Rounding a 0.4% wipe to "0%" would
 -- read as a kill, and the difference between those two is the whole point of
 -- the number.
+-- Read the stored percentage defensively. Trackers.lua refuses to store a
+-- protected ("secret") value, but a report can also arrive over sync or out of
+-- SavedVariables written by an older build, and comparing one of those raises.
+-- The UI must never be the thing that throws.
+function MCA:SafeBossHealthPct(data)
+    local pct = data and data.bossHealthPct
+    if type(pct) ~= "number" then return nil end
+    local ok = pcall(function() return pct >= 0 and pct <= 100 end)
+    if not ok then return nil end
+    return pct
+end
+
 function MCA:FormatBossHealth(data)
     if data.result then return "0%" end
 
-    local pct = tonumber(data.bossHealthPct)
+    local pct = self:SafeBossHealthPct(data)
     if not pct then return "-" end
     if pct > 0 and pct < 1 then return string.format("%.1f%%", pct) end
     return string.format("%d%%", math.floor(pct + 0.5))
@@ -534,7 +546,7 @@ end
 function MCA:GetBossHealthColor(data)
     if data.result then return self:UIColor("green") end
 
-    local pct = tonumber(data.bossHealthPct)
+    local pct = self:SafeBossHealthPct(data)
     if not pct then return self:UIColor("gray") end
     if pct <= 10 then return self:UIColor("orange") end
     return self:UIColor("red")

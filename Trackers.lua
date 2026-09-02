@@ -189,25 +189,58 @@ end
 -- boss units is simply skipped rather than recorded as 0.
 local MAX_BOSS_UNITS = 8
 
-function MCA:SampleBossHealth()
-    if not self.session then return end
+-- 12.0.7 hands back unit health for boss frames as "secret" values. Comparing
+-- or doing arithmetic on one from addon code raises immediately, and there is
+-- no way to test for it beforehand — tonumber() passes the value straight
+-- through and type() still says "number". So every read is attempted inside a
+-- pcall, and nothing is trusted until it survives one.
+local bossHealthUnavailable = false
 
+local function readBossHealthPercent()
     local cur, maxHP = 0, 0
     for i = 1, MAX_BOSS_UNITS do
         local unit = "boss" .. i
         if UnitExists(unit) then
-            local h = tonumber(UnitHealth(unit)) or 0
-            local hm = tonumber(UnitHealthMax(unit)) or 0
-            if hm > 0 then
+            local h = UnitHealth(unit)
+            local hm = UnitHealthMax(unit)
+            if hm and hm > 0 then
                 cur = cur + h
                 maxHP = maxHP + hm
             end
         end
     end
 
-    if maxHP <= 0 then return end
+    if maxHP <= 0 then return nil end
+    return (cur / maxHP) * 100
+end
 
-    local pct = (cur / maxHP) * 100
+-- A secret value survives being returned from the pcall above, so it has to be
+-- rejected before it can reach the session — from there it would be written
+-- into SavedVariables and blow up again in the UI on the next login.
+local function isUsableNumber(v)
+    if type(v) ~= "number" then return false end
+    return (pcall(function() return v >= 0 and v <= 100 end))
+end
+
+function MCA:SampleBossHealth()
+    if not self.session or bossHealthUnavailable then return end
+
+    local ok, pct = pcall(readBossHealthPercent)
+    if not ok then
+        -- Latch off instead of raising on every tick: unguarded, this threw
+        -- 112 times in a single pull.
+        bossHealthUnavailable = true
+        self:Debug("Boss health is protected on this client; Boss HP disabled.")
+        return
+    end
+
+    if pct == nil then return end
+    if not isUsableNumber(pct) then
+        bossHealthUnavailable = true
+        self:Debug("Boss health returned a protected value; Boss HP disabled.")
+        return
+    end
+
     local low = self.session.bossHPLow
     if not low or pct < low then
         self.session.bossHPLow = pct
@@ -267,6 +300,9 @@ end
 
 function MCA:StartSessionWatcher()
     self:StopSessionWatcher()
+    -- Retry health reads once per pull: the latch should not survive a fight,
+    -- in case the first failure was situational rather than a client-wide rule.
+    bossHealthUnavailable = false
     if not C_Timer or not C_Timer.NewTicker then return end
     sessionTicker = C_Timer.NewTicker(POLL_INTERVAL, pollSession)
 end
