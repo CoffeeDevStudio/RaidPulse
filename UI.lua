@@ -304,16 +304,13 @@ function MCA:MainFrame()
         if not found then table.insert(UISpecialFrames, "MCAFrame") end
     end
 
-    f:EnableKeyboard(true)
-    if f.SetPropagateKeyboardInput then f:SetPropagateKeyboardInput(true) end
-    f:SetScript("OnKeyDown", function(frame, key)
-        if key == "ESCAPE" then
-            if MCA.MinimapMenu and MCA.MinimapMenu:IsShown() then MCA.MinimapMenu:Hide() end
-            frame:Hide()
-            if frame.SetPropagateKeyboardInput then frame:SetPropagateKeyboardInput(false) end
-        elseif frame.SetPropagateKeyboardInput then
-            frame:SetPropagateKeyboardInput(true)
-        end
+    -- ESC closing is handled entirely by the UISpecialFrames registration
+    -- above. The frame used to grab the keyboard and re-implement that with
+    -- SetPropagateKeyboardInput, which is protected in combat: pressing any
+    -- key with the report open during a pull raised "action blocked". Letting
+    -- Blizzard do it also stops the window swallowing keybinds while open.
+    f:SetScript("OnHide", function()
+        if MCA.MinimapMenu and MCA.MinimapMenu:IsShown() then MCA.MinimapMenu:Hide() end
     end)
     f:SetPoint("CENTER")
     f:SetFrameStrata("DIALOG")
