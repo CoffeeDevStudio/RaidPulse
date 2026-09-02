@@ -1,6 +1,40 @@
 _G.MCA = _G.MCA or {}
 MCA = _G.MCA
 
+-- Find the raid/party/player unit token that currently matches a given name.
+-- Returns nil if the name is not in the group.
+-- Retail/Midnight introduced "secret keys" — opaque protected values that
+-- some APIs return for anonymized or protected units. Indexing a normal Lua
+-- table with such a value raises "attempted to index a table that cannot be
+-- indexed with secret keys". This helper returns the input only if it is a
+-- proper Lua string (i.e. safe to use as a table key), nil otherwise.
+function MCA:SafeName(name)
+    if type(name) ~= "string" then return nil end
+    -- Some clients also return names with a hyphen realm suffix; both are
+    -- ordinary strings and safe. This check is minimal by design — we do
+    -- NOT try to distinguish "secret" strings from regular ones (there is
+    -- no API for that); we simply reject non-strings.
+    if name == "" then return nil end
+    return name
+end
+
+function MCA:GetUnitForName(name)
+    if not name then return nil end
+    if UnitName("player") == name then return "player" end
+    if IsInRaid and IsInRaid() then
+        for i = 1, GetNumGroupMembers() do
+            local u = "raid" .. i
+            if UnitExists(u) and UnitName(u) == name then return u end
+        end
+    elseif IsInGroup and IsInGroup() then
+        for i = 1, GetNumGroupMembers() - 1 do
+            local u = "party" .. i
+            if UnitExists(u) and UnitName(u) == name then return u end
+        end
+    end
+    return nil
+end
+
 function MCA:GetSpellNameSafe(spellID, fallback)
     if C_Spell and C_Spell.GetSpellName then
         local ok, name = pcall(C_Spell.GetSpellName, spellID)

@@ -995,7 +995,7 @@ function MCA:DrawHistoryPage(parent)
     self:Text(header, "Esito", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 750, 0}, 70, self:UIColor("white"))
     self:Text(header, "Score", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
 
-    local y = -88
+    local y = -124
     local rowIndex = 0
 
     for i = #history, 1, -1 do
@@ -1038,7 +1038,7 @@ function MCA:DrawHistoryPage(parent)
     end
 
     if #history == 0 then
-        self:Text(parent, "Nessun report salvato. I prossimi report completati appariranno qui.", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 26, -94}, 620, self:UIColor("gray"))
+        self:Text(parent, "Nessun report salvato. I prossimi report completati appariranno qui.", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 26, -130}, 620, self:UIColor("gray"))
     end
 
     return math.abs(y) + 80
@@ -1113,7 +1113,7 @@ function MCA:DrawFullPage(root, data)
             event  = {x=90,  w=460},
             player = {x=560, w=160}
         }
-        self:DrawSmallPanel(panel, "Timeline  (Eventi principali)", nil, "blue",
+        self:DrawSmallPanel(panel, "Timeline", nil, "blue",
             {{label="Tempo",x=tlCols.time.x,w=tlCols.time.w},{label="Evento",x=tlCols.event.x,w=tlCols.event.w},{label="Player",x=tlCols.player.x,w=tlCols.player.w}},
             self:BuildTimelineRows(data, tlCols), "Torna al riepilogo")
         y = y - 450
@@ -1315,7 +1315,7 @@ function MCA:DrawDashboardPage(root, data)
         self:BuildDeathsRows(data), nil)
 
     local timelinePanel = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", leftX + cardW + gap, cardsY}, cardW, cardH)
-    self:DrawSmallPanel(timelinePanel, "Timeline  (Eventi principali)", nil, "blue",
+    self:DrawSmallPanel(timelinePanel, "Timeline", nil, "blue",
         {{label="Tempo",x=10,w=55},{label="Evento",x=76,w=210},{label="Player",x=300,w=90}},
         self:BuildTimelineRows(data), nil)
 

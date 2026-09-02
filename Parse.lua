@@ -134,25 +134,44 @@ end
 -- Returns 0..99.
 --
 -- Compressed / truncated curves: when the paginated sample only covers the
--- top of the real population (popular meta specs), the sample's observed
--- p1 sits somewhere around the world's ~p50, not the world's p1. Detecting
--- this heuristically (large sample + narrow spread OR explicit truncated
--- flag), we remap the observed 1..99 range into a compressed world window
--- COMPRESSED_MIN..99, applied CONSISTENTLY across the whole curve — not
--- just the tail — so interpolation stays monotonic.
-local COMPRESSED_MIN = 50  -- observed p1 becomes world p50 when compressed
+-- top of the real population, the sample's observed p1 is well above the
+-- world's real p1. How MUCH above depends on how many pages we fetched vs
+-- the spec's total population.
+--
+-- Since we don't know the total population, we use the spread of the sample
+-- as a proxy: a narrow top/p1 ratio (say 1.05) means the sample is packed
+-- together at the top of the world distribution, so our p1 is really quite
+-- high in the world (~p10). A wider ratio (1.5+) means we captured more of
+-- the middle of the distribution, so our p1 is closer to the world p50-p60.
+--
+-- The remap maps observed [1..99] -> [floor..99] where floor depends on
+-- ratio: narrow samples get a low floor (aggressive), wide samples get a
+-- high floor (gentle).
+-- Compressed / truncated curves: the paginated sample of top-N rankings
+-- represents some fraction of the total world population for this bracket.
+-- The spread of the sample tells us WHERE in the world distribution it sits.
+--
+-- - NARROW spread (top/p1 near 1.0): all N sampled players do similar DPS.
+--   This means our top-N is packed at the peak of the population - our
+--   observed p1 is really the world's p90+. High floor.
+-- - WIDE spread (top/p1 > 1.5): our top-N includes both elite and mid-tier
+--   players. Our observed p1 is closer to the world's p30-50. Low floor.
+local function computeCompressedFloor(ref)
+    local topV, p1V = ref.top or 0, ref.p1 or 0
+    if topV <= 0 or p1V <= 0 then return 50 end
+    local ratio = topV / p1V
+    if ratio >= 2.0 then return 20 end
+    if ratio >= 1.5 then return 40 end
+    if ratio >= 1.3 then return 60 end
+    if ratio >= 1.15 then return 75 end
+    return 85  -- ratio < 1.15: extremely dense, sample is world top-15%
+end
 
 local function percentileFromCurve(value, ref)
     if not ref or not value or value <= 0 then return 0 end
     local pcts = getCurvePercentiles()
 
     -- Detect compression / truncation.
-    -- Primary signal: explicit flag written by newer generator.
-    -- Secondary signal: sample size at a round multiple of 100 AND >= 1500
-    -- indicates a global (non-bracketed) fetch that hit the pagination cap.
-    -- Bracket-scoped curves (raid-v5) already represent a specific ilvl
-    -- population, so we don't want to auto-compress them: doing so would
-    -- push everyone's parse upward unrealistically.
     local compressed = ref.truncated == true
     if not compressed then
         local n = ref.sample or 0
@@ -160,6 +179,8 @@ local function percentileFromCurve(value, ref)
             compressed = true
         end
     end
+
+    local COMPRESSED_MIN = compressed and computeCompressedFloor(ref) or 1
 
     local function remap(observed_p)
         if not compressed then return observed_p end

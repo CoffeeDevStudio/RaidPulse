@@ -8,7 +8,6 @@ local events = {
     "PLAYER_LOGIN",
     "PLAYER_REGEN_DISABLED",
     "PLAYER_ENTERING_WORLD",
-    "PLAYER_LEAVING_WORLD",
     "GROUP_ROSTER_UPDATE",
     "ENCOUNTER_START",
     "ENCOUNTER_END",
@@ -17,17 +16,48 @@ local events = {
     "CHALLENGE_MODE_RESET",
     "CHAT_MSG_ADDON",
     "PLAYER_DEAD",
-    "UNIT_HEALTH",
-    "UNIT_SPELLCAST_SUCCEEDED"
+    "UNIT_SPELLCAST_SUCCEEDED",
+    -- COMBAT_LOG_EVENT_UNFILTERED intentionally NOT registered here.
+    -- In patch 12.0.7 (Midnight) registering CLEU from a non-Blizzard addon
+    -- raises "Frame:RegisterEvent() forbidden". The popup is cosmetic (the
+    -- addon still works) but very annoying. Trade-off: we lose the precise
+    -- killing-blow tracking that the CLEU handler in Trackers.lua was doing.
+    -- Deaths are still detected via PLAYER_DEAD (for the local player) and
+    -- via the periodic UnitIsDeadOrGhost checks in Trackers.lua for group
+    -- members. Cause-of-death text will fall back to "<name> muore".
 }
 
-for _, event in ipairs(events) do
-    f:RegisterEvent(event)
+-- Register a single event to bootstrap: ADDON_LOADED. Everything else is
+-- registered from within the ADDON_LOADED handler. This defers the whole
+-- registration batch to a point AFTER all addon files have loaded, which
+-- avoids the "Frame:RegisterEvent forbidden" popup that some patch 12.x
+-- clients raise when addons call RegisterEvent from a file's main chunk.
+_G.RaidPulseRegisterLog = _G.RaidPulseRegisterLog or {}
+local eventsRegistered = false
+
+local function registerAllEvents()
+    if eventsRegistered then return end
+    eventsRegistered = true
+    for _, event in ipairs(events) do
+        table.insert(_G.RaidPulseRegisterLog, event)
+        pcall(function() f:RegisterEvent(event) end)
+    end
 end
 
-f:SetScript("OnEvent", function(_, event, ...)
+f:RegisterEvent("ADDON_LOADED")
+
+f:SetScript("OnEvent", function(_, event, arg1, ...)
+    -- Bootstrap: when our addon has finished loading all files, register
+    -- the rest of the events. This one-shot handler runs once and unregisters
+    -- ADDON_LOADED so we don't listen to every addon's load event forever.
+    if event == "ADDON_LOADED" and arg1 == "RaidPulse" then
+        f:UnregisterEvent("ADDON_LOADED")
+        registerAllEvents()
+        return
+    end
+
     if MCA[event] then
-        local ok, err = pcall(MCA[event], MCA, ...)
+        local ok, err = pcall(MCA[event], MCA, arg1, ...)
         if not ok then
             MCA:Debug("Event error in " .. tostring(event) .. ": " .. tostring(err))
         end
@@ -43,16 +73,28 @@ function MCA:PLAYER_LOGIN()
     self:DetectElvUI()
     if self.InitInspectSpec then self:InitInspectSpec() end
     self:UpdateRoster()
-    if self.InspectSpec_QueueGroup then self:InspectSpec_QueueGroup() end
+    -- Delay the first inspect scan by 5s so it doesn't fire during the
+    -- loading-screen protection window (which raises "protected action"
+    -- popups on some clients).
+    C_Timer.After(5, function()
+        if MCA and MCA.InspectSpec_QueueGroup then
+            MCA:InspectSpec_QueueGroup()
+        end
+    end)
     if self.CreateMinimapButton then self:CreateMinimapButton() end
     self:Print("Loaded v" .. self.VERSION)
 end
 
 function MCA:PLAYER_ENTERING_WORLD()
     self:UpdateRoster()
-    if self.InspectSpec_QueueGroup then self:InspectSpec_QueueGroup() end
 
-    C_Timer.After(2, function()
+    -- Same delay as above: PLAYER_ENTERING_WORLD fires after every loading
+    -- screen (portals, hearthstone, wipes), and the client protects UI-side
+    -- API calls for a short window afterwards.
+    C_Timer.After(3, function()
+        if MCA and MCA.InspectSpec_QueueGroup then
+            MCA:InspectSpec_QueueGroup()
+        end
         if MCA and MCA.SendHello then
             MCA:SendHello()
         end
@@ -61,7 +103,13 @@ end
 
 function MCA:GROUP_ROSTER_UPDATE()
     self:UpdateRoster()
-    if self.InspectSpec_QueueGroup then self:InspectSpec_QueueGroup() end
+    -- Roster updates during combat should not trigger inspect calls (they're
+    -- protected). Defer to next OnUpdate tick.
+    C_Timer.After(1, function()
+        if MCA and MCA.InspectSpec_QueueGroup then
+            MCA:InspectSpec_QueueGroup()
+        end
+    end)
     self:SendHello()
 end
 

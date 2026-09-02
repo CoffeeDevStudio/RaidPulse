@@ -3,9 +3,10 @@
 ## Notes: Real-time raid and Mythic+ analytics with local parse
 ## Author: Simone Pimpinella
 ## Version: 1.0
-## IconTexture: Interface\AddOns\RaidPulse\Textures\icon
-## SavedVariables: RaidPulseDB
+## SavedVariables: RaidPulseDB, RaidPulseDiagLog
+# ## IconTexture: Interface\AddOns\RaidPulse\Textures\icon
 
+Init.lua
 Core.lua
 SpellDB.lua
 ClassBuffs.lua

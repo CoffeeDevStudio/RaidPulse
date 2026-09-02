@@ -14,6 +14,7 @@ MCA = _G.MCA
 local INSPECT_INTERVAL = 2.0    -- seconds between inspects
 local INSPECT_TIMEOUT  = 3.0    -- seconds to wait for INSPECT_READY response
 local RETRY_LIMIT      = 2      -- give up on a unit after this many failures
+local FIRST_SCAN_DELAY = 15     -- seconds after Init before we allow inspects
 
 -- Per-session cache: guid -> specID.
 MCA.specCache = MCA.specCache or {}
@@ -22,6 +23,8 @@ MCA.specCache = MCA.specCache or {}
 local inspectQueue = {}         -- list of {guid=, unit=} entries to process
 local inspectPending = nil      -- currently-being-inspected {guid=, unit=, sentAt=, retries=}
 local inspectFrame              -- OnUpdate driver frame
+local initTime = GetTime()      -- when the addon's SpecInspect module was loaded
+local firstScanReady = false    -- true after FIRST_SCAN_DELAY has elapsed
 
 -- Utility: find a raid/party unit id by GUID (unit tokens change slot when
 -- someone leaves/joins, so we can't rely on the one we queued).
@@ -90,6 +93,24 @@ end
 
 local function processQueue()
     if inspectPending then return end
+
+    -- Skip the entire login taint window: no inspect calls until we've been
+    -- initialized for FIRST_SCAN_DELAY seconds.
+    if not firstScanReady then
+        if GetTime() - initTime >= FIRST_SCAN_DELAY then
+            firstScanReady = true
+        else
+            return
+        end
+    end
+
+    -- NotifyInspect is protected during combat and during some transitional
+    -- states (loading screens, entering instances). Skip; the OnUpdate loop
+    -- will try again on the next tick.
+    if InCombatLockdown and InCombatLockdown() then return end
+    if UnitAffectingCombat and UnitAffectingCombat("player") then return end
+    if IsFalling and IsFalling() then return end
+
     local next = table.remove(inspectQueue, 1)
     if not next then return end
 
@@ -98,12 +119,21 @@ local function processQueue()
     if not unit or not UnitExists(unit) then return end
     if not CanInspect(unit, false) then return end
 
+    -- We must NOT open the inspect frame, so wrap in pcall in case a taint
+    -- would raise. Also stop if inspecting our own player (safety).
+    if UnitIsUnit(unit, "player") then return end
+
     inspectPending = {
         guid = next.guid, unit = unit,
         sentAt = GetTime(), retries = next.retries,
     }
 
-    NotifyInspect(unit)
+    local ok = pcall(NotifyInspect, unit)
+    if not ok then
+        -- Something else in the client is holding the inspect slot. Drop
+        -- this attempt; the OnUpdate timer will retry after INSPECT_INTERVAL.
+        inspectPending = nil
+    end
 end
 
 local function onInspectReady(guid)
