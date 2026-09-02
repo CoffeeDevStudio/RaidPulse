@@ -180,16 +180,50 @@ function MCA:MarkDead(unit)
     end
 end
 
--- Death watcher.
+-- Lowest boss health seen during the current engagement, as a percentage.
+-- This is the number raiders actually quote about a wipe ("we got him to 12%").
+--
+-- Council fights are summed rather than averaged: the encounter ends when the
+-- whole council is down, so combined remaining health is what tracks progress.
+-- Boss frames only exist while an encounter is engaged, so a sample with no
+-- boss units is simply skipped rather than recorded as 0.
+local MAX_BOSS_UNITS = 8
+
+function MCA:SampleBossHealth()
+    if not self.session then return end
+
+    local cur, maxHP = 0, 0
+    for i = 1, MAX_BOSS_UNITS do
+        local unit = "boss" .. i
+        if UnitExists(unit) then
+            local h = tonumber(UnitHealth(unit)) or 0
+            local hm = tonumber(UnitHealthMax(unit)) or 0
+            if hm > 0 then
+                cur = cur + h
+                maxHP = maxHP + hm
+            end
+        end
+    end
+
+    if maxHP <= 0 then return end
+
+    local pct = (cur / maxHP) * 100
+    local low = self.session.bossHPLow
+    if not low or pct < low then
+        self.session.bossHPLow = pct
+    end
+end
+
+-- Session watcher.
 -- 12.0.7 forbids COMBAT_LOG_EVENT_UNFILTERED registration for addons (see
 -- Events.lua) and registering UNIT_HEALTH raised the same popup on some
--- clients, so group deaths are found by polling instead. Half a second is far
--- finer than anything read off the timeline, and the ticker only walks the
--- roster while a session is actually running.
-local DEATH_POLL_INTERVAL = 0.5
-local deathTicker = nil
+-- clients, so group deaths and boss health are found by polling instead. Half
+-- a second is far finer than anything read off the timeline or a wipe
+-- percentage, and the ticker only runs while a session is actually active.
+local POLL_INTERVAL = 0.5
+local sessionTicker = nil
 
-local function pollGroupDeaths()
+local function pollSession()
     if not MCA or not MCA.session then return end
 
     if IsInRaid() then
@@ -202,18 +236,20 @@ local function pollGroupDeaths()
             MCA:MarkDead("party" .. i)
         end
     end
+
+    MCA:SampleBossHealth()
 end
 
-function MCA:StartDeathWatcher()
-    self:StopDeathWatcher()
+function MCA:StartSessionWatcher()
+    self:StopSessionWatcher()
     if not C_Timer or not C_Timer.NewTicker then return end
-    deathTicker = C_Timer.NewTicker(DEATH_POLL_INTERVAL, pollGroupDeaths)
+    sessionTicker = C_Timer.NewTicker(POLL_INTERVAL, pollSession)
 end
 
-function MCA:StopDeathWatcher()
-    if deathTicker then
-        deathTicker:Cancel()
-        deathTicker = nil
+function MCA:StopSessionWatcher()
+    if sessionTicker then
+        sessionTicker:Cancel()
+        sessionTicker = nil
     end
 end
 

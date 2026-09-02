@@ -493,7 +493,7 @@ function MCA:DrawTopDashboard(root, data)
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
         {"Deaths", tostring(totals.deaths), self:UIColor("red")},
         {"Buff Raid", tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0), self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")},
-        {"Punteggio", self:ComputeRaidScore(data).."%", self:UIColor("green")}
+        {"Boss HP", self:FormatBossHealth(data), self:GetBossHealthColor(data)}
     }
     local cellWidth = 126
     local x = 0
@@ -514,6 +514,30 @@ function MCA:DrawTopDashboard(root, data)
     icon:SetTexture("Interface\\Icons\\Achievement_Dungeon_GloryoftheRaider")
     self:Text(mode, "Modalità", "GameFontNormal", {"TOPLEFT", mode, "TOPLEFT", 70, -13}, 110, self:UIColor("white"))
     self:Text(mode, self:GetModeDifficultyText(data), "GameFontHighlight", {"TOPLEFT", mode, "TOPLEFT", 70, -36}, 130, self:GetDifficultyColor(data.difficulty))
+end
+
+-- How much of the boss was still standing when the attempt ended: 0% on a
+-- kill, otherwise the lowest health the encounter reached.
+--
+-- Sub-1% wipes keep a decimal on purpose. Rounding a 0.4% wipe to "0%" would
+-- read as a kill, and the difference between those two is the whole point of
+-- the number.
+function MCA:FormatBossHealth(data)
+    if data.result then return "0%" end
+
+    local pct = tonumber(data.bossHealthPct)
+    if not pct then return "-" end
+    if pct > 0 and pct < 1 then return string.format("%.1f%%", pct) end
+    return string.format("%d%%", math.floor(pct + 0.5))
+end
+
+function MCA:GetBossHealthColor(data)
+    if data.result then return self:UIColor("green") end
+
+    local pct = tonumber(data.bossHealthPct)
+    if not pct then return self:UIColor("gray") end
+    if pct <= 10 then return self:UIColor("orange") end
+    return self:UIColor("red")
 end
 
 function MCA:ComputeRaidScore(data)

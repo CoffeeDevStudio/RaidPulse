@@ -119,6 +119,10 @@ function MCA:StartRaidEncounter(id, name)
             name = name,
             startTime = GetTime() - self.session.start
         }
+        -- Boss health is tracked per engagement, so a new pull inside a key
+        -- starts fresh: the reported percentage always describes the most
+        -- recent boss, not the lowest one reached anywhere in the run.
+        self.session.bossHPLow = nil
         self:Debug("M+ boss started: " .. tostring(name))
         return
     end
@@ -139,7 +143,7 @@ function MCA:StartRaidEncounter(id, name)
 
     self:CopyRosterToSession()
     self:SendHello()
-    if self.StartDeathWatcher then self:StartDeathWatcher() end
+    if self.StartSessionWatcher then self:StartSessionWatcher() end
 
     self:Print("Raid encounter started: " .. tostring(name))
 end
@@ -194,7 +198,7 @@ function MCA:StartMythicPlusSession()
 
     self:CopyRosterToSession()
     self:SendHello()
-    if self.StartDeathWatcher then self:StartDeathWatcher() end
+    if self.StartSessionWatcher then self:StartSessionWatcher() end
 
     self:Print("Mythic+ started")
 end
@@ -653,12 +657,20 @@ end
 function MCA:FinalizeSession(success, forceImmediate)
     if not self.session then return end
 
-    if self.StopDeathWatcher then self:StopDeathWatcher() end
+    -- One last reading before the watcher stops: the ticker samples every
+    -- 0.5s, and this catches the final sliver of health on a very close wipe.
+    -- Harmless once the boss frames are gone — the sampler skips empty reads.
+    if self.SampleBossHealth then self:SampleBossHealth() end
+    if self.StopSessionWatcher then self:StopSessionWatcher() end
     if self.ScanAllAuras then self:ScanAllAuras() end
     if self.ScanAllDebuffs then self:ScanAllDebuffs() end
 
     self.session.duration = GetTime() - self.session.start
     self.session.result = success == true
+
+    -- How much of the boss was left standing. A kill is 0% by definition;
+    -- a wipe reports the lowest health the encounter reached.
+    self.session.bossHealthPct = self.session.result and 0 or self.session.bossHPLow
 
     local mcaMode, mcaDifficulty = self:GetCurrentModeDifficulty()
     self.session.mode = self.session.mode or mcaMode
