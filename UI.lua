@@ -84,6 +84,27 @@ end
 
 
 
+-- Button that can render as selected. Button() captures its border colour in
+-- the OnLeave closure, so an active state painted over it would be wiped the
+-- first time the mouse left; this keeps the selected colours in the closure.
+function MCA:FilterButton(parent, text, point, w, h, active, fn)
+    local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    b:SetPoint(unpack(point))
+    b:SetSize(w, h)
+
+    local bg = active and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.88}
+    local br = active and {0.95,0.78,0.05,1} or {0.22,0.23,0.24,1}
+    self:SetBackdropSolid(b, bg, br)
+    self:Text(b, text, "GameFontNormalSmall", {"CENTER", b, "CENTER", 0, 0}, w - 6,
+        active and self:UIColor("accent") or self:UIColor("gray"), "CENTER")
+
+    b:SetScript("OnClick", fn or function() end)
+    b:SetScript("OnEnter", function() b:SetBackdropBorderColor(1, 0.82, 0, 1) end)
+    b:SetScript("OnLeave", function() b:SetBackdropBorderColor(br[1], br[2], br[3], br[4] or 1) end)
+    return b
+end
+
+
 function MCA:Scroll(parent, point, w, h, bg)
     local outer = self:Panel(parent, point, w, h, bg)
     local scroll = CreateFrame("ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
@@ -968,13 +989,66 @@ function MCA:DrawRaidBuffMatrix(parent, data)
 end
 
 
+-- True when a saved report counts as a kill. Mirrors the truthiness test the
+-- row rendering uses, so the filter can never disagree with the "Esito" column
+-- a player is looking at.
+local function reportIsKill(report)
+    return (report and report.result) and true or false
+end
+
 function MCA:DrawHistoryPage(parent)
     local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
 
-    self:Text(parent, "Report salvati: " .. tostring(#history), "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 20, -56}, 240, self:UIColor("gray"))
+    -- nil = show everything, otherwise keep only kills or only wipes.
+    local filter = self.historyFilter
+    local kills, wipes = 0, 0
+    for _, report in ipairs(history) do
+        if reportIsKill(report) then kills = kills + 1 else wipes = wipes + 1 end
+    end
+    local shown = (filter == "kill" and kills) or (filter == "wipe" and wipes) or #history
 
-    self:Button(parent, "Cancella storico", {"TOPRIGHT", parent, "TOPRIGHT", -20, -50}, 140, 24, function()
-        MCA:ClearHistory()
+    local countText = "Report salvati: " .. tostring(#history)
+    if filter then
+        countText = countText .. "  (mostrati: " .. tostring(shown) .. ")"
+    end
+    self:Text(parent, countText, "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 20, -56}, 250, self:UIColor("gray"))
+
+    local function selectFilter(value)
+        MCA.historyFilter = value
+        MCA.activeTab = "history"
+        MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
+    end
+
+    self:Text(parent, "Esito:", "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", 280, -56}, 46, self:UIColor("gray"))
+    self:FilterButton(parent, "Tutti", {"TOPLEFT", parent, "TOPLEFT", 330, -50}, 72, 24,
+        filter == nil, function() selectFilter(nil) end)
+    self:FilterButton(parent, "Kill (" .. kills .. ")", {"TOPLEFT", parent, "TOPLEFT", 408, -50}, 82, 24,
+        filter == "kill", function() selectFilter("kill") end)
+    self:FilterButton(parent, "Wipe (" .. wipes .. ")", {"TOPLEFT", parent, "TOPLEFT", 496, -50}, 82, 24,
+        filter == "wipe", function() selectFilter("wipe") end)
+
+    -- The delete button always follows the filter, and spells out how many
+    -- reports it is about to remove — there is no undo, so the scope of the
+    -- click has to be readable before making it.
+    local deleteLabel, deleteCount
+    if filter == "kill" then
+        deleteLabel, deleteCount = "Cancella Kill (" .. kills .. ")", kills
+    elseif filter == "wipe" then
+        deleteLabel, deleteCount = "Cancella Wipe (" .. wipes .. ")", wipes
+    else
+        deleteLabel, deleteCount = "Cancella storico (" .. #history .. ")", #history
+    end
+
+    self:Button(parent, deleteLabel, {"TOPRIGHT", parent, "TOPRIGHT", -20, -50}, 180, 24, function()
+        if deleteCount == 0 then
+            MCA:Print("Nessun report da cancellare con questo filtro.")
+            return
+        end
+        if filter then
+            MCA:ClearHistoryByResult(filter == "kill")
+        else
+            MCA:ClearHistory()
+        end
         MCA.activeTab = "history"
         MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
     end, true)
@@ -997,6 +1071,15 @@ function MCA:DrawHistoryPage(parent)
 
     for i = #history, 1, -1 do
         local report = history[i]
+        local isKill = reportIsKill(report)
+
+        -- Skipping rather than building a filtered copy keeps `i` pointing at
+        -- the real history index, which the per-row delete below relies on.
+        local visible = (filter == nil)
+            or (filter == "kill" and isKill)
+            or (filter == "wipe" and not isKill)
+
+        if visible then
         rowIndex = rowIndex + 1
 
         local row = CreateFrame("Button", nil, parent, "BackdropTemplate")
@@ -1005,14 +1088,14 @@ function MCA:DrawHistoryPage(parent)
         self:SetBackdropSolid(row, rowIndex % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
 
         local score = self.ComputeRaidScore and self:ComputeRaidScore(report) or 0
-        local resultText = report.result and "Kill" or "Wipe"
+        local resultText = isKill and "Kill" or "Wipe"
 
         self:Text(row, report.savedAt or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 10, 0}, 120, self:UIColor("gray"))
         self:Text(row, report.type or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 145, 0}, 70, self:UIColor("accent"))
         self:Text(row, report.boss or "?", "GameFontNormal", {"LEFT", row, "LEFT", 230, 0}, 260, self:UIColor("white"))
         self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510, 0}, 130, self:GetDifficultyColor(report.difficulty))
         self:Text(row, self:FormatTime(report.duration or 0), "GameFontNormalSmall", {"LEFT", row, "LEFT", 660, 0}, 70, self:UIColor("white"))
-        self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750, 0}, 70, report.result and self:UIColor("green") or self:UIColor("red"))
+        self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750, 0}, 70, isKill and self:UIColor("green") or self:UIColor("red"))
         self:Text(row, tostring(score).."%", "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, score >= 75 and self:UIColor("green") or self:UIColor("orange"))
 
         self:Button(row, "Apri", {"RIGHT", row, "RIGHT", -84, 0}, 64, 22, function()
@@ -1034,10 +1117,13 @@ function MCA:DrawHistoryPage(parent)
         end)
 
         y = y - 32
+        end
     end
 
     if #history == 0 then
         self:Text(parent, "Nessun report salvato. I prossimi report completati appariranno qui.", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 26, -130}, 620, self:UIColor("gray"))
+    elseif shown == 0 then
+        self:Text(parent, "Nessun report con esito " .. (filter == "kill" and "Kill" or "Wipe") .. ".", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 26, -130}, 620, self:UIColor("gray"))
     end
 
     return math.abs(y) + 80

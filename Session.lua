@@ -789,6 +789,29 @@ function MCA:ClearHistory()
     self:Print("Storico report cancellato.")
 end
 
+-- Remove only the saved reports with a given outcome. Iterates backwards so
+-- the removals don't shift indexes still to be visited.
+-- `report.result` is written as a boolean but old saved reports may hold any
+-- truthy value, so compare on truthiness the same way the UI renders the
+-- "Esito" column — the filter must never disagree with what is on screen.
+function MCA:ClearHistoryByResult(wantKill)
+    if not RaidPulseDB or type(RaidPulseDB.history) ~= "table" then return 0 end
+
+    local removed = 0
+    for i = #RaidPulseDB.history, 1, -1 do
+        local report = RaidPulseDB.history[i]
+        local isKill = (report and report.result) and true or false
+        if isKill == (wantKill and true or false) then
+            table.remove(RaidPulseDB.history, i)
+            removed = removed + 1
+        end
+    end
+
+    self:Print(string.format("Rimossi %d report con esito %s.",
+        removed, wantKill and "Kill" or "Wipe"))
+    return removed
+end
+
 
 function MCA:GetCurrentRaidDifficultyLabel()
     local _, _, difficultyID, difficultyName = GetInstanceInfo()
