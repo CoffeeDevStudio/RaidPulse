@@ -181,7 +181,7 @@ function MCA:MinimapMenu_Rebuild()
         MCA:ShowExportWindow(MCA.lastReport)
     end)
 
-    y = self:MinimapMenu_AddButton("Share", y, function()
+    self:MinimapMenu_AddButton("Share", y, function()
         MCA:ShareSummary(MCA.lastReport)
     end)
 

@@ -199,9 +199,9 @@ function MCA:RefreshRaidBuffWindowLive()
 
 end
 function MCA:BuildRaidBuffWindow(matrix)
-    
     matrix = MCA_RaidBuff_FilterRunesFromMatrix(matrix)
-if self.RaidBuffFrame then
+
+    if self.RaidBuffFrame then
         self.RaidBuffFrame:Hide()
         self.RaidBuffFrame:SetParent(nil)
         self.RaidBuffFrame = nil

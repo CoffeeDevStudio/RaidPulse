@@ -22,11 +22,7 @@ MCA.selectedPlayer = nil
 MCA.activeTab     = "summary"
 
 -- Saved variables scaffolding.
-RaidPulseDB          = RaidPulseDB or {}
-RaidPulseDB.history  = RaidPulseDB.history or {}
-RaidPulseDB.config   = RaidPulseDB.config or {}
-
-local defaults = {
+MCA.CONFIG_DEFAULTS = {
     showAfterKill      = true,
     showAfterWipe      = true,
     showMythicEnd      = true,
@@ -39,11 +35,22 @@ local defaults = {
     historyLimit       = 50,
 }
 
-for k, v in pairs(defaults) do
-    if RaidPulseDB.config[k] == nil then
-        RaidPulseDB.config[k] = v
+-- Must run again on ADDON_LOADED: WoW replaces the global with the stored
+-- saved variables after this file has executed, so defaults added in a new
+-- version would otherwise never reach an existing profile.
+function MCA:InitDB()
+    RaidPulseDB          = RaidPulseDB or {}
+    RaidPulseDB.history  = RaidPulseDB.history or {}
+    RaidPulseDB.config   = RaidPulseDB.config or {}
+
+    for k, v in pairs(self.CONFIG_DEFAULTS) do
+        if RaidPulseDB.config[k] == nil then
+            RaidPulseDB.config[k] = v
+        end
     end
 end
+
+MCA:InitDB()
 
 function MCA:Print(msg)
     print("|cff00ccff[RP]|r " .. tostring(msg))

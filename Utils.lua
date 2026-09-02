@@ -199,7 +199,7 @@ end
 function MCA:GetSortedInterruptPlayers(report)
     local list = {}
     if report and type(report.players) == "table" then
-        for _, p in ipairs(report.players) do
+        for _, p in pairs(report.players) do
             local value = self:GetInterruptValue(p)
             if value and value > 0 then
                 table.insert(list, p)
@@ -233,13 +233,13 @@ function MCA:CaptureBlizzardInterrupts(report, sessionID)
     local byName = {}
 
     if type(report.players) == "table" then
-        for _, p in ipairs(report.players) do
+        for _, p in pairs(report.players) do
             if p.guid then byGuid[p.guid] = p end
             if p.name then byName[p.name] = p end
         end
     end
 
-    for _, source in ipairs(data.combatSources) do
+    for index, source in ipairs(data.combatSources) do
         local value = tonumber(source.totalAmount or source.amount or source.count or 0) or 0
         local guid = source.sourceGUID or source.guid or source.unitGUID
         local name = nil
@@ -247,7 +247,7 @@ function MCA:CaptureBlizzardInterrupts(report, sessionID)
         if okName then name = plainName end
 
         if value > 0 then
-            report.blizzardInterrupts[guid or name or tostring(_)] = value
+            report.blizzardInterrupts[guid or name or tostring(index)] = value
 
             local p = (guid and byGuid[guid]) or (name and byName[name])
             if p then
@@ -360,7 +360,4 @@ function MCA:GetDisplayRating(player)
 
     if value <= 0 then return 0 end
     return tonumber(player.classRating or player.rating or player.score or 0) or 0
-end
-function MCA:GetScore(player)
-    return self:GetDisplayRating(player)
 end

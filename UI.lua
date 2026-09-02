@@ -463,7 +463,7 @@ end
 function MCA:DrawTopDashboard(root, data)
     local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 154, -36}, 290, 64, {0.018,0.021,0.024,0.50})
     self:Text(info, data.boss or "Report", "GameFontHighlightLarge", {"TOPLEFT", info, "TOPLEFT", 16, -9}, 150, self:UIColor("purple"))
-    self:Text(info, (data.result and "Completato" or "Wipe")..": "..date("%d/%m/%Y %H:%M"), "GameFontNormal", {"TOPLEFT", info, "TOPLEFT", 16, -36}, 220, self:UIColor("green"))
+    self:Text(info, (data.result and "Completato" or "Wipe")..": "..(data.savedAt or date("%d/%m/%Y %H:%M")), "GameFontNormal", {"TOPLEFT", info, "TOPLEFT", 16, -36}, 220, self:UIColor("green"))
 
     local totals = self:GetTotals(data)
     local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 466, -36}, 630, 64, {0.018,0.021,0.024,0.72})
@@ -661,9 +661,6 @@ function MCA:DrawBossBreakdown(parent, data)
         self:SetBackdropSolid(row, i == 1 and {0.10,0.16,0.25,0.75} or (i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row")), {0.12,0.13,0.14,1})
 
         local deaths = self:CountDeathsInWindow(data, b.startTime or 0, b.endTime or data.duration or 0)
-        local cds = self:CountCDsInWindow(data, b.startTime or 0, b.endTime or data.duration or 0)
-        local score = math.max(0, 100 - deaths*10 + math.min(cds, 10))
-        if score > 100 then score = 100 end
 
         self:Text(row, tostring(i), "GameFontNormal", {"LEFT", row, "LEFT", xNum, 0}, wNum, self:UIColor("white"), "CENTER")
         self:Text(row, b.name or "Boss", "GameFontNormal", {"LEFT", row, "LEFT", xBoss, 0}, wBoss, self:UIColor("accent"))
@@ -1020,6 +1017,7 @@ function MCA:DrawHistoryPage(parent)
 
         self:Button(row, "Apri", {"RIGHT", row, "RIGHT", -84, 0}, 64, 22, function()
             MCA.activeTab = "summary"
+            MCA.lastReport = report
             MCA:BuildDashboard(report)
         end)
 
@@ -1031,6 +1029,7 @@ function MCA:DrawHistoryPage(parent)
 
         row:SetScript("OnClick", function()
             MCA.activeTab = "summary"
+            MCA.lastReport = report
             MCA:BuildDashboard(report)
         end)
 
@@ -1047,7 +1046,7 @@ end
 function MCA:DrawFullPage(root, data)
     local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", 154, -112}, 1150, 535, {0.018,0.020,0.022,0.65})
 
-    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", timeline="Timeline", history="Storico", settings="Impostazioni"}
+    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
 
     self:Text(child, title, "GameFontHighlightLarge", {"TOPLEFT", child, "TOPLEFT", 16, -12}, 300, self:UIColor("accent"))
@@ -1085,7 +1084,10 @@ function MCA:DrawFullPage(root, data)
         y = y - 450
 
     elseif self.activeTab == "interrupts" then
-        self:BuildInterruptPage(content or page or body or frame, data)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        self:BuildInterruptPage(panel, data)
+        y = y - 450
+
     elseif self.activeTab == "deaths" then
         local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
         local deathCols = {
@@ -1286,10 +1288,7 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
 end
 
 function MCA:DrawDashboardPage(root, data)
-    
-    -- MCA 4.3.4 force ratings in DrawDashboardPage
-    if self.ApplyClassBasedRatings and data then self:ApplyClassBasedRatings(data) end
--- v4.0.16 dashboard:
+    -- v4.0.16 dashboard:
     -- Top row: DPS/Tank table left, Healer/HPS table right.
     -- Bottom row: Deaths, Timeline, Boss Breakdown.
     local leftX, totalW = 154, 1152
@@ -1348,22 +1347,13 @@ end
 
 -- MCA 4.0.29d restored real dashboard opener from 4.0.28
 function MCA:BuildDashboard(data)
-    -- MCA 4.1.5: enforce class ratings before rendering
-    if self.ApplyClassBasedRatings and data then self:ApplyClassBasedRatings(data) end
-    -- MCA 4.1.4: recalc class based ratings on report open
-    if self.ApplyClassBasedRatings and data then self:ApplyClassBasedRatings(data) end
     if not data then return end
 
     -- MCA 4.3.6 apply M+ deaths before dashboard render
     if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(data) end
 
-    -- MCA 4.3.3 strict meter rating before render
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
-
-    -- MCA 4.3.0 force class ratings before any UI render
-    if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
-
-    -- MCA 4.2.8: enforce final class-only ratings before rendering
+    -- Ratings are derived from the meter values, so they are recomputed on
+    -- every render (late joiners and synced data can change them).
     if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
 
     self.lastReport = data
@@ -1389,7 +1379,7 @@ function MCA:BuildDashboard(data)
     self:Button(root, "Share in chat", {"BOTTOMLEFT", root, "BOTTOMLEFT", 178, 18}, 150, 34, function() MCA:ShareSummary(data) end)
     self:Button(root, "Cancella Dati", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -150, 18}, 130, 34, function()
         MCA.lastReport = nil
-        if MCAFrame then MCAFrame:Hide() end
+        if _G.MCAFrame then _G.MCAFrame:Hide() end
         MCA:Print("Dati report cancellati.")
     end, true)
     self:Button(root, "Chiudi", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -16, 18}, 120, 34, function() root:Hide() end)
@@ -1432,17 +1422,6 @@ function MCA:StretchFrameToScrollbar(frame, parent, leftPadding, rightPadding)
     frame:ClearAllPoints()
     frame:SetPoint("TOPLEFT", parent, "TOPLEFT", leftPadding, -8)
     frame:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -rightPadding, 8)
-end
-
-
--- MCA 4.1.5 class-rating UI helpers
-function MCA:GetDisplayRating(player)
-    if not player then return 0 end
-    local r=tonumber(player.classRating or player.rating or player.score or 0) or 0
-    local d=tonumber(player.blizzardDps or player.dps or player.fightDPS or player.amountPerSecond or 0) or 0
-    local h=tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
-    if d<=0 and h<=0 then return 0 end
-    return r
 end
 
 
@@ -1495,7 +1474,7 @@ function MCA:BuildInterruptPage(parent, report)
     end
 
     if not list or #list == 0 then
-        self:Text(box, "Nessun interrupt registrato per questo encounter.", "GameFontNormal", {"TOPLEFT", box, "TOPLEFT", 20, -52}, 440, self:UIColor("muted"))
+        self:Text(box, "Nessun interrupt registrato per questo encounter.", "GameFontNormal", {"TOPLEFT", box, "TOPLEFT", 20, -52}, 440, self:UIColor("gray"))
         return
     end
 
@@ -1513,14 +1492,14 @@ function MCA:BuildInterruptPage(parent, report)
         self:Text(row, tostring(i)..".", "GameFontNormalSmall", {"LEFT", row, "LEFT", cols[1].x, 0}, cols[1].w, self:UIColor("white"), "CENTER")
 
         if self.ClassIcon and p.class then
-            self:ClassIcon(row, p.class, {"LEFT", row, "LEFT", cols[2].x, 0}, 16)
+            self:ClassIcon(row, p.class, cols[2].x, -6, 16)
             self:Text(row, p.name or "-", "GameFontNormalSmall", {"LEFT", row, "LEFT", cols[2].x + 22, 0}, cols[2].w - 22, self:UIColor("accent"))
         else
             self:Text(row, p.name or "-", "GameFontNormalSmall", {"LEFT", row, "LEFT", cols[2].x, 0}, cols[2].w, self:UIColor("accent"))
         end
 
         if self.ClassIcon and p.class then
-            self:ClassIcon(row, p.class, {"LEFT", row, "LEFT", cols[3].x, 0}, 16)
+            self:ClassIcon(row, p.class, cols[3].x, -6, 16)
             self:Text(row, tostring(p.class or "-"), "GameFontNormalSmall", {"LEFT", row, "LEFT", cols[3].x + 22, 0}, cols[3].w - 22, self:UIColor("white"))
         else
             self:Text(row, tostring(p.class or "-"), "GameFontNormalSmall", {"LEFT", row, "LEFT", cols[3].x, 0}, cols[3].w, self:UIColor("white"))
@@ -1538,32 +1517,6 @@ function MCA:BuildInterruptsTab(parent, report)
     if self.BuildInterruptPage then
         return self:BuildInterruptPage(parent, report)
     end
-end
-
-
--- MCA 4.2.8 display rating helper in UI
-function MCA:GetDisplayRating(player)
-    if not player then return 0 end
-    local r=tonumber(player.classRating or player.rating or player.score or 0) or 0
-    local d=tonumber(player.blizzardDps or player.dps or player.fightDPS or player.amountPerSecond or 0) or 0
-    local h=tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
-    if d<=0 and h<=0 then return 0 end
-    return r
-end
-
-
--- MCA 4.3.3 strict UI display rating override
-function MCA:GetDisplayRating(player)
-    if not player then return 0 end
-    local isHealer = tostring(player.role or player.ruolo or player.Role or ""):lower():find("heal") ~= nil
-    local value = 0
-    if isHealer then
-        value = tonumber(player.blizzardHps or player.hps or player.fightHPS or player.healingPerSecond or 0) or 0
-    else
-        value = tonumber(player.blizzardDps or player.dps or player.fightDPS or player.damagePerSecond or player.amountPerSecond or 0) or 0
-    end
-    if value <= 0 then return 0 end
-    return tonumber(player.classRating or player.rating or player.score or 0) or 0
 end
 
 
@@ -1608,12 +1561,13 @@ function MCA:GetHeaderCdOrDeathsLabel(data)
     if self.IsMythicPlusData and self:IsMythicPlusData(data) then
         return "Morti Totali"
     end
-    return self:GetHeaderCdOrDeathsLabel(data)
+    return "Deaths"
 end
 
 function MCA:GetHeaderCdOrDeathsValue(data)
     if self.IsMythicPlusData and self:IsMythicPlusData(data) then
         return self:GetHeaderDeathsValue(data)
     end
-    return tonumber(data and (self:GetHeaderCdOrDeathsValue(data)) or 0) or 0
+    local totals = data and self:GetTotals(data)
+    return tonumber(totals and totals.deaths or 0) or 0
 end
