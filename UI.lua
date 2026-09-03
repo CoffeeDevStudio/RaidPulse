@@ -604,43 +604,43 @@ end
 
 
 
-function MCA:DrawPlayerTable(parent, data, singlePlayer)
-    local topOffset = singlePlayer and -8 or -8
-    local outerW = parent:GetWidth() - 16
-    local outerH = parent:GetHeight() - (singlePlayer and 18 or 18)
-    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, topOffset}, outerW, outerH, {0.018,0.020,0.022,0.55})
+function MCA:DrawPlayerTable(parent, data, singlePlayer, y)
+    -- Columns are spread across the full page width. They used to be packed
+    -- into the left 540px with the last one stretching to the edge, which left
+    -- "Parse" floating alone in the middle of a 500px column.
+    local cols = {
+        num    = {x=10,  w=30,  justify="CENTER"},
+        player = {x=50,  w=260},
+        class  = {x=320, w=200},
+        role   = {x=530, w=100, justify="CENTER"},
+        deaths = {x=640, w=90,  justify="CENTER"},
+        metric = {x=740, w=140, justify="CENTER"},
+        parse  = {x=890, w=158, justify="CENTER"},
+    }
 
-    local tableW = outerW - 28
-
-    -- Adaptive columns. Last column always ends inside tableW.
-    -- In single-player detail mode the "Stato" column is removed and the
-    -- score column is relabeled "Rating", so it gets the remaining width.
-    -- In list mode the "Stato" column is replaced by the DPS/HPS metric and
-    -- "Score" is relabeled "Rating", mirroring the Riepilogo tables.
-    local cols
+    -- Detail view drops the metric column; Parse takes its slot so the layout
+    -- does not shift between the list and the single-player view.
+    local headers
     if singlePlayer then
-        cols = {
-            {label="#", x=6, w=22, justify="CENTER"},
-            {label="Player", x=36, w=140},
-            {label="Classe", x=188, w=116},
-            {label="Ruolo", x=314, w=58, justify="CENTER"},
-            {label="Morti", x=382, w=46, justify="CENTER"},
-            {label="Parse", x=438, w=math.max(tableW - 438, 70), justify="CENTER"}
+        headers = {
+            {label="#",      x=cols.num.x,    w=cols.num.w,    justify="CENTER"},
+            {label="Player", x=cols.player.x, w=cols.player.w},
+            {label="Classe", x=cols.class.x,  w=cols.class.w},
+            {label="Ruolo",  x=cols.role.x,   w=cols.role.w,   justify="CENTER"},
+            {label="Morti",  x=cols.deaths.x, w=cols.deaths.w, justify="CENTER"},
+            {label="Parse",  x=cols.metric.x, w=cols.metric.w, justify="CENTER"},
         }
     else
-        cols = {
-            {label="#", x=6, w=22, justify="CENTER"},
-            {label="Player", x=36, w=140},
-            {label="Classe", x=188, w=116},
-            {label="Ruolo", x=314, w=58, justify="CENTER"},
-            {label="Morti", x=382, w=46, justify="CENTER"},
-            {label="DPS/HPS", x=438, w=90, justify="CENTER"},
-            {label="Parse", x=540, w=math.max(tableW - 540, 70), justify="CENTER"}
+        headers = {
+            {label="#",       x=cols.num.x,    w=cols.num.w,    justify="CENTER"},
+            {label="Player",  x=cols.player.x, w=cols.player.w},
+            {label="Classe",  x=cols.class.x,  w=cols.class.w},
+            {label="Ruolo",   x=cols.role.x,   w=cols.role.w,   justify="CENTER"},
+            {label="Morti",   x=cols.deaths.x, w=cols.deaths.w, justify="CENTER"},
+            {label="DPS/HPS", x=cols.metric.x, w=cols.metric.w, justify="CENTER"},
+            {label="Parse",   x=cols.parse.x,  w=cols.parse.w,  justify="CENTER"},
         }
     end
-
-    local y = -2
-    y = self:TableHeader(child, cols, y)
 
     local list
     if singlePlayer then
@@ -652,49 +652,41 @@ function MCA:DrawPlayerTable(parent, data, singlePlayer)
         if self.CalculateRoleRatings then self:CalculateRoleRatings(list) end
     end
 
+    local rows = {}
     for i, p in ipairs(list) do
-        local row = CreateFrame("Button", nil, child, "BackdropTemplate")
-        row:SetPoint("TOPLEFT", 0, y)
-        row:SetSize(tableW, 28)
-        self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+        local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
+        local nameColor = i % 3 == 0 and self:UIColor("blue")
+            or (i % 3 == 1 and self:UIColor("accent") or self:UIColor("orange"))
 
-        self:Text(row, tostring(i)..".", "GameFontNormal", {"LEFT", row, "LEFT", 6, 0}, 22, self:UIColor("white"), "CENTER")
-
-        self:ClassIcon(row, p.class, 36, -5, 18)
-        self:Text(row, p.name or "?", "GameFontNormal", {"LEFT", row, "LEFT", 60, 0}, 114, i % 3 == 0 and self:UIColor("blue") or (i % 3 == 1 and self:UIColor("accent") or self:UIColor("orange")))
-
-        self:ClassIcon(row, p.class, 188, -5, 18)
-        self:Text(row, self:PrettyClass(p.class), "GameFontNormalSmall", {"LEFT", row, "LEFT", 212, 0}, 90, self:UIColor("white"))
-
-        self:Text(row, self:RoleShort(p.role), "GameFontNormalSmall", {"LEFT", row, "LEFT", 314, 0}, 58, self:UIColor("white"), "CENTER")
-        self:Text(row, tostring(p.deaths or 0), "GameFontNormal", {"LEFT", row, "LEFT", 382, 0}, 46, (p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white"), "CENTER")
+        local row = {
+            {x=cols.num.x,    w=cols.num.w,    text=tostring(i)..".", justify="CENTER"},
+            {x=cols.player.x, w=cols.player.w, text=p.name or "?", classIcon=p.class,
+             font="GameFontNormal", color=nameColor},
+            {x=cols.class.x,  w=cols.class.w,  text=self:PrettyClass(p.class), classIcon=p.class},
+            {x=cols.role.x,   w=cols.role.w,   text=self:RoleShort(p.role), justify="CENTER"},
+            {x=cols.deaths.x, w=cols.deaths.w, text=tostring(p.deaths or 0), justify="CENTER",
+             color=(p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white")},
+        }
 
         if singlePlayer then
-            local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
-            local scoreCol = cols[6]
-            self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", scoreCol.x, 0}, scoreCol.w, parseColor, "CENTER")
+            row[#row + 1] = {x=cols.metric.x, w=cols.metric.w, text=parseText,
+                             color=parseColor, justify="CENTER", font="GameFontNormal"}
         else
-            -- Same data as the Riepilogo role tables.
-            local metricValue = self:GetFightMetric(p)
-            local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
-            local metricCol, ratingCol = cols[6], cols[7]
-
-            self:Text(row, self:FormatMetricValue(metricValue), "GameFontNormal", {"LEFT", row, "LEFT", metricCol.x, 0}, metricCol.w, self:UIColor("white"), "CENTER")
-            self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", ratingCol.x, 0}, ratingCol.w, parseColor, "CENTER")
-        end
-
-        if not singlePlayer then
-            row:SetScript("OnClick", function()
+            row[#row + 1] = {x=cols.metric.x, w=cols.metric.w,
+                             text=self:FormatMetricValue(self:GetFightMetric(p)), justify="CENTER"}
+            row[#row + 1] = {x=cols.parse.x, w=cols.parse.w, text=parseText,
+                             color=parseColor, justify="CENTER", font="GameFontNormal"}
+            row.onClick = function()
                 MCA.selectedPlayer = p
                 MCA.activeTab = "playerDetail"
                 MCA:BuildDashboard(data)
-            end)
+            end
         end
 
-        y = y - 28
+        rows[#rows + 1] = row
     end
 
-    self:UpdateScrollBar(child, scroll, math.abs(y)+20)
+    return self:DrawPageTable(parent, headers, rows, y)
 end
 
 function MCA:PrettyClass(class)
@@ -1222,17 +1214,26 @@ function MCA:DrawPageTable(parent, headers, rows, y)
     end
 
     for i, rowData in ipairs(rows) do
-        local row = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+        -- A row is a plain frame unless it carries an onClick, in which case it
+        -- has to be a Button to receive one.
+        local row = CreateFrame(rowData.onClick and "Button" or "Frame", nil, parent, "BackdropTemplate")
         row:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
         row:SetSize(PAGE_W, 30)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+        if rowData.onClick then row:SetScript("OnClick", rowData.onClick) end
 
         for _, cell in ipairs(rowData) do
-            if cell.spellID then self:SpellIcon(row, cell.spellID, cell.x, -6, 18) end
-            local textX = cell.x + (cell.spellID and 25 or 0)
-            local textW = (cell.w or 80) - (cell.spellID and 25 or 0)
-            self:Text(row, cell.text or "", "GameFontNormalSmall",
-                {"LEFT", row, "LEFT", textX, 0}, textW,
+            local iconW = 0
+            if cell.spellID then
+                self:SpellIcon(row, cell.spellID, cell.x, -6, 18)
+                iconW = 25
+            elseif cell.classIcon then
+                self:ClassIcon(row, cell.classIcon, cell.x, -6, 18)
+                iconW = 24
+            end
+
+            self:Text(row, cell.text or "", cell.font or "GameFontNormalSmall",
+                {"LEFT", row, "LEFT", cell.x + iconW, 0}, (cell.w or 80) - iconW,
                 cell.color or self:UIColor("white"), cell.justify or "LEFT")
         end
 
@@ -1279,14 +1280,10 @@ function MCA:DrawFullPage(root, data)
         end
 
     elseif self.activeTab == "players" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
-        self:DrawPlayerTable(panel, data)
-        y = y - 450
+        y = self:DrawPlayerTable(child, data, false, y)
 
     elseif self.activeTab == "playerDetail" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
-        self:DrawPlayerTable(panel, data, true)
-        y = y - 450
+        y = self:DrawPlayerTable(child, data, true, y)
 
     elseif self.activeTab == "interrupts" then
         local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
