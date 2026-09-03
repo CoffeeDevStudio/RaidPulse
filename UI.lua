@@ -23,6 +23,18 @@ local PAGE_PAD = 8         -- inner padding for text drawn straight onto the pag
 local CONTENT_X = 170
 local CONTENT_W = 1100
 
+-- One spacing value between blocks, on both axes, so nothing is "nearly"
+-- evenly spaced. The sidebar sets where the body ends: every block bottoms out
+-- level with it, rather than each stopping wherever its own hardcoded height
+-- happened to land.
+local GAP = 16
+local SIDE_X, SIDE_Y = 8, -8
+local SIDE_W, SIDE_H = 138, 702
+local CONTENT_BOTTOM = SIDE_Y - SIDE_H       -- -710
+local DASH_Y, DASH_H = -36, 64               -- the KPI strip under the title
+local BODY_Y = DASH_Y - DASH_H - GAP         -- top of everything below it
+local BODY_H = math.abs(CONTENT_BOTTOM) - math.abs(BODY_Y)
+
 MCA.ClassIconCoords = {
     WARRIOR={0,0.25,0,0.25}, MAGE={0.25,0.5,0,0.25}, ROGUE={0.5,0.75,0,0.25}, DRUID={0.75,1,0,0.25},
     HUNTER={0,0.25,0.25,0.5}, SHAMAN={0.25,0.5,0.25,0.5}, PRIEST={0.5,0.75,0.25,0.5}, WARLOCK={0.75,1,0.25,0.5},
@@ -387,7 +399,7 @@ function MCA:SuccessTexture(parent, point, success)
 end
 
 function MCA:DrawSidebar(root)
-    local side = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 8, -8}, 138, 702, {0.012,0.017,0.022,0.96})
+    local side = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", SIDE_X, SIDE_Y}, SIDE_W, SIDE_H, {0.012,0.017,0.022,0.96})
 
     -- Emblem placeholder
     local emblem = side:CreateTexture(nil, "ARTWORK")
@@ -501,12 +513,12 @@ function MCA:GetModeDifficultyText(data)
 end
 
 function MCA:DrawTopDashboard(root, data)
-    local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, -36}, 280, 64, {0.018,0.021,0.024,0.50})
+    local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, DASH_Y}, 288, DASH_H, {0.018,0.021,0.024,0.50})
     self:Text(info, data.boss or "Report", "GameFontHighlightLarge", {"TOPLEFT", info, "TOPLEFT", 16, -9}, 150, self:UIColor("purple"))
     self:Text(info, (data.result and "Completato" or "Wipe")..": "..(data.savedAt or date("%d/%m/%Y %H:%M")), "GameFontNormal", {"TOPLEFT", info, "TOPLEFT", 16, -36}, 220, self:UIColor("green"))
 
     local totals = self:GetTotals(data)
-    local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + 300, -36}, 600, 64, {0.018,0.021,0.024,0.72})
+    local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + 288 + GAP, DASH_Y}, 600, DASH_H, {0.018,0.021,0.024,0.72})
     local cells = {
         {"Boss", totals.bossKilled.."/"..totals.bosses, self:UIColor("accent")},
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
@@ -526,7 +538,7 @@ function MCA:DrawTopDashboard(root, data)
         x = x + cellWidth
     end
 
-    local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + CONTENT_W - 180, -36}, 180, 64, {0.018,0.021,0.024,0.72})
+    local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + CONTENT_W - 180, DASH_Y}, 180, DASH_H, {0.018,0.021,0.024,0.72})
     local icon = mode:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("LEFT", 20, 0)
     icon:SetSize(36,36)
@@ -1231,7 +1243,7 @@ function MCA:DrawPageTable(parent, headers, rows, y)
 end
 
 function MCA:DrawFullPage(root, data)
-    local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, -112}, CONTENT_W, 535, {0.018,0.020,0.022,0.65})
+    local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, BODY_Y}, CONTENT_W, BODY_H, {0.018,0.020,0.022,0.65})
 
     local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
@@ -1490,9 +1502,16 @@ function MCA:DrawDashboardPage(root, data)
     -- Top row: DPS/Tank table left, Healer/HPS table right.
     -- Bottom row: Deaths, Timeline, Boss Breakdown.
     local leftX, totalW = CONTENT_X, CONTENT_W
-    local gap = 16
-    local topY = -106
-    local topH = 330
+    local gap = GAP
+
+    -- Both rows share the body height, split so the cards keep roughly the
+    -- proportion they had, and the bottom row lands exactly on the sidebar's
+    -- bottom edge. Previously topY, the row heights and the card offset were
+    -- four independent constants, which is why the gaps came out 6px above and
+    -- 24px below, and the cards stopped 20px short of the sidebar.
+    local topY = BODY_Y
+    local rowsSpace = BODY_H - gap
+    local topH = math.floor(rowsSpace * 0.59)
 
     local halfW = math.floor((totalW - gap) / 2)
 
@@ -1502,8 +1521,8 @@ function MCA:DrawDashboardPage(root, data)
     local healerPanel = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", leftX + halfW + gap, topY}, halfW, topH)
     self:DrawRoleMetricTable(healerPanel, data, "Healer", true)
 
-    local cardsY = -460
-    local cardH = 230
+    local cardsY = topY - topH - gap
+    local cardH = rowsSpace - topH
     local cardW = math.floor((totalW - (gap * 2)) / 3)
 
     local deathPanel = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", leftX, cardsY}, cardW, cardH)
