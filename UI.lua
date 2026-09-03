@@ -796,7 +796,7 @@ function MCA:NormalizeColumns(parent, headers)
     return filtered
 end
 
-function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows, buttonText)
+function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
     local color = self:UIColor(colorName or "accent")
     self:Text(parent, title, "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -12}, parent:GetWidth()-28, color)
 
@@ -834,26 +834,6 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows, 
     end
 
     self:UpdateScrollBar(child, scroll, math.abs(y)+20)
-
-    if buttonText and buttonText ~= "" then
-        self:Button(parent, buttonText, {"BOTTOMLEFT", parent, "BOTTOMLEFT", 8, 8}, parent:GetWidth()-16, 24, function()
-            local label = buttonText or ""
-
-            if label:find("Torna") then
-                MCA.activeTab = "summary"
-            elseif title == "Deaths" then
-                MCA.activeTab = "deaths"
-            elseif title and title:find("Timeline") then
-                MCA.activeTab = "timeline"
-            elseif title and (title:find("Difensive") or title:find("Defensive")) then
-                MCA.activeTab = "players"
-            else
-                MCA.activeTab = "summary"
-            end
-
-            MCA:BuildDashboard(MCA.lastReport)
-        end)
-    end
 end
 
 function MCA:BuildDeathsRows(data, cols)
@@ -1213,14 +1193,14 @@ function MCA:DrawFullPage(root, data)
         }
         self:DrawSmallPanel(panel, "Deaths", nil, "red",
             {{label="Tempo",x=deathCols.time.x,w=deathCols.time.w},{label="Player",x=deathCols.player.x,w=deathCols.player.w},{label="Boss",x=deathCols.boss.x,w=deathCols.boss.w},{label="HP",x=deathCols.extra.x,w=deathCols.extra.w,justify="CENTER"}},
-            self:BuildDeathsRows(data, deathCols), "Torna al riepilogo")
+            self:BuildDeathsRows(data, deathCols))
         y = y - 450
 
     elseif self.activeTab == "buffs" then
         local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
         self:DrawSmallPanel(panel, "Buff Raid", nil, "purple",
             {{label="Icona",x=10,w=45},{label="Debuff",x=60,w=180},{label="Player",x=260,w=120},{label="Stack",x=400,w=70},{label="Durata",x=500,w=90}},
-            self:BuildRaidBuffRows(data), "Torna al riepilogo")
+            self:BuildRaidBuffRows(data))
         y = y - 450
 
     elseif self.activeTab == "timeline" then
@@ -1232,7 +1212,7 @@ function MCA:DrawFullPage(root, data)
         }
         self:DrawSmallPanel(panel, "Timeline", nil, "blue",
             {{label="Tempo",x=tlCols.time.x,w=tlCols.time.w},{label="Evento",x=tlCols.event.x,w=tlCols.event.w},{label="Player",x=tlCols.player.x,w=tlCols.player.w}},
-            self:BuildTimelineRows(data, tlCols), "Torna al riepilogo")
+            self:BuildTimelineRows(data, tlCols))
         y = y - 450
 
     elseif self.activeTab == "history" then
