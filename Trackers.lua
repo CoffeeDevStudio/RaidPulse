@@ -221,18 +221,40 @@ local function readBossHealthFromUnits()
     return (cur / maxHP) * 100
 end
 
--- Reader 2: Blizzard's own boss frames. The status bars are filled in by
--- untainted Blizzard code, and reading a widget's value is a frame call rather
--- than a unit query — so it can survive where the unit API is protected.
--- Only useful while the default boss frames exist; a unit-frame replacement
--- may hide or never create them, in which case this finds nothing and the
--- caller falls through.
+-- Reader 2: boss-frame status bars. Whoever draws the frames feeds them the
+-- health values, and reading a widget is a frame call rather than a unit query
+-- — so this survives where the unit API is protected.
+--
+-- The bar must be VISIBLE, not merely shown. IsShown() reports the widget's
+-- own flag and stays true when an ancestor is hidden, which is exactly what a
+-- unit-frame replacement does to Blizzard's boss frames: the bar keeps
+-- answering GetValue() with whatever it held when it was orphaned. Reading one
+-- of those returns a confident, permanently wrong 100%.
+local BOSS_FRAME_SOURCES = {
+    { name = "blizzard", frame = "Boss%dTargetFrame", bars = {"healthbar", "HealthBar"} },
+    { name = "elvui",    frame = "ElvUF_Boss%d",      bars = {"Health"} },
+}
+
+local function findBossBar(index)
+    for _, src in ipairs(BOSS_FRAME_SOURCES) do
+        local frame = _G[src.frame:format(index)]
+        if frame and frame.IsVisible and frame:IsVisible() then
+            for _, key in ipairs(src.bars) do
+                local bar = frame[key]
+                if bar and bar.GetValue and bar.IsVisible and bar:IsVisible() then
+                    return bar, src.name
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
 local function readBossHealthFromFrames()
     local cur, maxHP = 0, 0
     for i = 1, MAX_BOSS_UNITS do
-        local frame = _G["Boss" .. i .. "TargetFrame"]
-        local bar = frame and (frame.healthbar or frame.HealthBar)
-        if bar and bar.GetValue and bar:IsShown() then
+        local bar = findBossBar(i)
+        if bar then
             local v = bar:GetValue()
             local lo, hi = bar:GetMinMaxValues()
             if v and lo and hi and hi > lo then
@@ -432,6 +454,33 @@ function MCA:ReportWatcherState()
                 reader.name))
         else
             self:Print(string.format("    lettura '%s': %.1f%% OK", reader.name, pct))
+        end
+    end
+
+    -- Per-frame detail. A bar that is shown but not visible has been orphaned
+    -- by a unit-frame replacement and stops updating, so it reports a frozen
+    -- value forever — the difference between the two flags is the whole story.
+    for i = 1, MAX_BOSS_UNITS do
+        for _, src in ipairs(BOSS_FRAME_SOURCES) do
+            local fname = src.frame:format(i)
+            local frame = _G[fname]
+            if frame then
+                local shown = frame.IsShown and frame:IsShown()
+                local visible = frame.IsVisible and frame:IsVisible()
+                local detail = ""
+                for _, key in ipairs(src.bars) do
+                    local bar = frame[key]
+                    if bar and bar.GetValue then
+                        local v = bar:GetValue()
+                        local lo, hi = bar:GetMinMaxValues()
+                        local bvis = bar.IsVisible and bar:IsVisible()
+                        detail = detail .. string.format(" | %s: val=%s min=%s max=%s visibile=%s",
+                            key, tostring(v), tostring(lo), tostring(hi), tostring(bvis))
+                    end
+                end
+                self:Print(string.format("    %s: shown=%s visibile=%s%s",
+                    fname, tostring(shown), tostring(visible), detail))
+            end
         end
     end
 
