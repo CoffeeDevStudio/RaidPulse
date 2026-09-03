@@ -201,112 +201,71 @@ local bossReadFailures = 0
 -- boss frames yet is not written off.
 local BOSS_READ_GIVE_UP = 240
 
--- Every failure so far has been "attempt to COMPARE" — never a read, never
--- arithmetic. So route the value through string formatting, which produces an
--- ordinary string, and parse a plain number back out of it. If the client
--- refuses to format a protected value the pcall catches it and we have lost
--- nothing.
-local function launder(v)
-    if v == nil then return nil end
-    local ok, s = pcall(string.format, "%.4f", v)
-    if not ok then return nil end
-    return tonumber(s)
+-- Blizzard exposes issecretvalue() precisely so an addon can test a value
+-- before touching it, rather than discovering it is protected by raising on a
+-- comparison. It is what BigWigs uses, and unlike reading someone else's unit
+-- frame it depends on nothing but the game itself.
+local issecretvalue = _G.issecretvalue
+
+local function isSecret(v)
+    if not issecretvalue then return false end
+    local ok, secret = pcall(issecretvalue, v)
+    if not ok then return true end
+    return secret and true or false
 end
 
--- Reader 0: the unit API, with every value laundered before it is compared.
-local function readBossHealthLaundered()
-    local cur, maxHP = 0, 0
-    for i = 1, MAX_BOSS_UNITS do
-        local unit = "boss" .. i
-        if UnitExists(unit) then
-            local h = launder(UnitHealth(unit))
-            local hm = launder(UnitHealthMax(unit))
-            -- Plain numbers by this point, so comparing them is safe.
-            if h and hm and hm > 0 then
-                cur = cur + h
-                maxHP = maxHP + hm
-            end
-        end
-    end
-
-    if maxHP <= 0 then return nil end
-    return (cur / maxHP) * 100
-end
-
--- Reader 1: the unit API. Direct and exact, but this is the one that hands
--- back protected values on 12.0.7.
+-- Reader 1: exact health, weighted across a council by real health pools.
+-- Ordering comparisons are what raise on protected values, so the only test
+-- left here is an equality check, and every value is screened before use.
 local function readBossHealthFromUnits()
     local cur, maxHP = 0, 0
     for i = 1, MAX_BOSS_UNITS do
         local unit = "boss" .. i
-        if UnitExists(unit) then
+        if UnitExists(unit) and not isSecret(unit) then
             local h = UnitHealth(unit)
             local hm = UnitHealthMax(unit)
-            if hm and hm > 0 then
+            if not isSecret(h) and not isSecret(hm) and hm ~= 0 then
                 cur = cur + h
                 maxHP = maxHP + hm
             end
         end
     end
 
-    if maxHP <= 0 then return nil end
+    if maxHP == 0 then return nil end
     return (cur / maxHP) * 100
 end
 
--- Reader 2: boss-frame status bars. Whoever draws the frames feeds them the
--- health values, and reading a widget is a frame call rather than a unit query
--- — so this survives where the unit API is protected.
+-- Reader 2: the percentage API, which exists for exactly this case — showing
+-- how much of a unit is left without handing out its real health numbers.
 --
--- The bar must be VISIBLE, not merely shown. IsShown() reports the widget's
--- own flag and stays true when an ancestor is hidden, which is exactly what a
--- unit-frame replacement does to Blizzard's boss frames: the bar keeps
--- answering GetValue() with whatever it held when it was orphaned. Reading one
--- of those returns a confident, permanently wrong 100%.
-local BOSS_FRAME_SOURCES = {
-    { name = "blizzard", frame = "Boss%dTargetFrame", bars = {"healthbar", "HealthBar"} },
-    { name = "elvui",    frame = "ElvUF_Boss%d",      bars = {"Health"} },
-}
+-- It reports per-unit percentages, so a council can only be averaged rather
+-- than weighted by health pool: less precise than reader 1 on an uneven
+-- council, but it keeps working where the raw values are protected.
+local function readBossHealthByGUID()
+    if not UnitPercentHealthFromGUID then return nil end
 
-local function findBossBar(index)
-    for _, src in ipairs(BOSS_FRAME_SOURCES) do
-        local frame = _G[src.frame:format(index)]
-        if frame and frame.IsVisible and frame:IsVisible() then
-            for _, key in ipairs(src.bars) do
-                local bar = frame[key]
-                if bar and bar.GetValue and bar.IsVisible and bar:IsVisible() then
-                    return bar, src.name
+    local total, count = 0, 0
+    for i = 1, MAX_BOSS_UNITS do
+        local unit = "boss" .. i
+        if UnitExists(unit) then
+            local guid = UnitGUID(unit)
+            if guid and not isSecret(guid) then
+                local pct = UnitPercentHealthFromGUID(guid)
+                if pct and not isSecret(pct) then
+                    total = total + pct
+                    count = count + 1
                 end
             end
         end
     end
-    return nil, nil
-end
 
-local function readBossHealthFromFrames()
-    local cur, maxHP = 0, 0
-    for i = 1, MAX_BOSS_UNITS do
-        local bar = findBossBar(i)
-        if bar then
-            -- Bars fed from protected health hand protected numbers straight
-            -- back out of GetValue/GetMinMaxValues, so launder these too.
-            local v = launder(bar:GetValue())
-            local lo, hi = bar:GetMinMaxValues()
-            lo, hi = launder(lo), launder(hi)
-            if v and lo and hi and hi > lo then
-                cur = cur + (v - lo)
-                maxHP = maxHP + (hi - lo)
-            end
-        end
-    end
-
-    if maxHP <= 0 then return nil end
-    return (cur / maxHP) * 100
+    if count == 0 then return nil end
+    return total / count
 end
 
 local BOSS_HEALTH_READERS = {
-    { name = "laundered", fn = readBossHealthLaundered },
-    { name = "unit",      fn = readBossHealthFromUnits },
-    { name = "frame",     fn = readBossHealthFromFrames },
+    { name = "unit",    fn = readBossHealthFromUnits },
+    { name = "percent", fn = readBossHealthByGUID },
 }
 
 -- A secret value survives being returned from the pcall above, so it has to be
@@ -493,81 +452,43 @@ function MCA:ReportWatcherState()
         end
     end
 
-    -- Which operations does this client actually allow on a protected value?
-    -- Every failure so far has been a comparison, so if formatting is permitted
-    -- the value can be laundered into an ordinary number and the whole feature
-    -- works. This settles that in one line instead of another raid night.
-    -- Probe whichever boss unit actually exists. Keying this to "boss1"
-    -- specifically meant the probe silently never ran on an encounter whose
-    -- units start at boss2.
-    local probeUnit = nil
+    -- Per-unit detail. issecretvalue is the supported way to ask whether the
+    -- client will hand a value over, so this reports a fact instead of probing
+    -- by trial and reading the answer off an error message.
+    local anyBoss = false
     for i = 1, MAX_BOSS_UNITS do
-        if UnitExists("boss" .. i) then
-            probeUnit = "boss" .. i
-            break
-        end
-    end
-
-    if not probeUnit then
-        self:Print("    nessuna unita' boss su cui sondare le operazioni")
-    else
-        local raw = UnitHealth(probeUnit)
-        local rawMax = UnitHealthMax(probeUnit)
-        local probes = {
-            { "tostring",   function() return tostring(raw) end },
-            { "format",     function() return string.format("%.1f", raw) end },
-            { "concat",     function() return "" .. raw end },
-            { "somma",      function() return raw + 0 end },
-            { "divisione",  function() return raw / rawMax end },
-            { "math.floor", function() return math.floor(raw) end },
-            { "confronto",  function() return raw > 0 end },
-        }
-        local results = {}
-        for _, probe in ipairs(probes) do
-            local ok, res = pcall(probe[2])
-            local entry = probe[1] .. "=" .. (ok and "OK" or "NO")
-            if ok and (probe[1] == "format" or probe[1] == "tostring"
-                       or probe[1] == "concat") then
-                entry = entry .. "[" .. tostring(res) .. "]"
+        local unit = "boss" .. i
+        if UnitExists(unit) then
+            anyBoss = true
+            local guid = UnitGUID(unit)
+            local pct = nil
+            if UnitPercentHealthFromGUID and guid and not isSecret(guid) then
+                pct = UnitPercentHealthFromGUID(guid)
             end
-            results[#results + 1] = entry
-        end
-        self:Print("    " .. probeUnit .. " operazioni: " .. table.concat(results, " "))
 
-        -- And the thing that actually matters: does laundering produce a
-        -- usable plain number?
-        local washed = launder(raw)
-        self:Print("    launder(" .. probeUnit .. ") -> " .. tostring(washed)
-            .. " (usabile=" .. tostring(washed ~= nil and isUsableNumber(washed)) .. ")")
-    end
-
-    -- Per-frame detail. A bar that is shown but not visible has been orphaned
-    -- by a unit-frame replacement and stops updating, so it reports a frozen
-    -- value forever — the difference between the two flags is the whole story.
-    for i = 1, MAX_BOSS_UNITS do
-        for _, src in ipairs(BOSS_FRAME_SOURCES) do
-            local fname = src.frame:format(i)
-            local frame = _G[fname]
-            if frame then
-                local shown = frame.IsShown and frame:IsShown()
-                local visible = frame.IsVisible and frame:IsVisible()
-                local detail = ""
-                for _, key in ipairs(src.bars) do
-                    local bar = frame[key]
-                    if bar and bar.GetValue then
-                        local v = bar:GetValue()
-                        local lo, hi = bar:GetMinMaxValues()
-                        local bvis = bar.IsVisible and bar:IsVisible()
-                        detail = detail .. string.format(" | %s: val=%s min=%s max=%s visibile=%s",
-                            key, tostring(v), tostring(lo), tostring(hi), tostring(bvis))
-                    end
-                end
-                self:Print(string.format("    %s: shown=%s visibile=%s%s",
-                    fname, tostring(shown), tostring(visible), detail))
+            local pctText
+            if not UnitPercentHealthFromGUID then
+                pctText = "API assente"
+            elseif pct == nil then
+                pctText = "nessun valore"
+            elseif isSecret(pct) then
+                pctText = "protetta"
+            else
+                pctText = string.format("%.1f%%", pct)
             end
+
+            self:Print(string.format(
+                "    %s: health protetto=%s | max protetto=%s | percentuale=%s",
+                unit,
+                tostring(isSecret(UnitHealth(unit))),
+                tostring(isSecret(UnitHealthMax(unit))),
+                pctText))
         end
     end
 
+    if not anyBoss then
+        self:Print("    nessuna unita' boss ingaggiata")
+    end
     visitGroupUnits(function(unit)
         if not UnitExists(unit) then return end
         local name = UnitName(unit)
