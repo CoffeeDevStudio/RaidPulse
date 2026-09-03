@@ -15,7 +15,6 @@ local events = {
     "CHALLENGE_MODE_START",
     "CHALLENGE_MODE_COMPLETED",
     "CHALLENGE_MODE_RESET",
-    "CHAT_MSG_ADDON",
     "PLAYER_DEAD",
     "PLAYER_LEAVING_WORLD",
     "UNIT_SPELLCAST_SUCCEEDED",
@@ -26,9 +25,7 @@ local events = {
     --
     -- Deaths are instead detected by the polling death watcher in Trackers.lua
     -- (started with the session), and the cause of death comes from Blizzard's
-    -- own death recap (C_DeathInfo) for the local player, which every RaidPulse
-    -- user then broadcasts to the group over DCAUSE. The only thing still lost
-    -- versus CLEU is the cause of death for players who don't run the addon.
+    -- own death recap (C_DeathInfo), which only covers the local player.
 }
 
 -- Register a single event to bootstrap: ADDON_LOADED. Everything else is
@@ -78,7 +75,6 @@ function MCA:ADDON_LOADED(addonName)
 end
 
 function MCA:PLAYER_LOGIN()
-    self:InitSync()
     self:DetectElvUI()
     if self.InitInspectSpec then self:InitInspectSpec() end
     self:UpdateRoster()
@@ -104,9 +100,6 @@ function MCA:PLAYER_ENTERING_WORLD()
         if MCA and MCA.InspectSpec_QueueGroup then
             MCA:InspectSpec_QueueGroup()
         end
-        if MCA and MCA.SendHello then
-            MCA:SendHello()
-        end
     end)
 end
 
@@ -119,7 +112,6 @@ function MCA:GROUP_ROSTER_UPDATE()
             MCA:InspectSpec_QueueGroup()
         end
     end)
-    self:SendHello()
 end
 
 function MCA:ENCOUNTER_START(id, name)

@@ -14,7 +14,6 @@ BenchmarksDB.lua
 Utils.lua
 Style.lua
 Session.lua
-Sync.lua
 Trackers.lua
 Parse.lua
 SpecInspect.lua

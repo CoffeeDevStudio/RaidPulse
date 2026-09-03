@@ -77,11 +77,19 @@ function MCA:ShowExportWindow(data)
     self:Print(self:GetExportText(data or self.lastReport))
 end
 
+-- Which chat channel "Share in chat" should post to.
+function MCA:GetShareChannel()
+    if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
+    if IsInRaid() then return "RAID" end
+    if IsInGroup() then return "PARTY" end
+    return nil
+end
+
 function MCA:ShareSummary(data)
     data = data or self.lastReport
     if not data then return end
 
-    local channel = self:GetSyncChannel()
+    local channel = self:GetShareChannel()
     local chatType = nil
 
     if channel == "RAID" then chatType = "RAID"

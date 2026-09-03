@@ -939,10 +939,9 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
     self:UpdateScrollBar(child, scroll, math.abs(y)+20)
 end
 
--- What killed a player, when we know it. The cause comes from the local
--- player's own death recap and from DCAUSE messages sent by other RaidPulse
--- users, so it is present for some rows and not others — this column used to
--- be a hardcoded "-" on every single row.
+-- What killed a player, when we know it. Only the local player's own death
+-- recap is available, so it is filled in for their rows and not for others —
+-- this column used to be a hardcoded "-" on every single row.
 function MCA:DeathCauseText(player)
     if not player then return "-" end
 
@@ -1028,7 +1027,7 @@ function MCA:BuildDefensiveRows(data)
                 {x=55, w=120, text=u.name or self:GetSpellNameSafe(u.spellID), color=self:UIColor("white")},
                 {x=185, w=80, text=self:BossNameAtTime(data, u.time or 0), color=self:UIColor("white")},
                 {x=275, w=55, text=self:FormatTime(u.time or 0), color=self:UIColor("white"), justify="CENTER"},
-                {x=340, w=70, text=u.source == "sync" and "Sync" or "Difensiva", color=self:UIColor("white")}
+                {x=340, w=70, text="Difensiva", color=self:UIColor("white")}
             })
         end
     end
@@ -1639,7 +1638,7 @@ function MCA:BuildDashboard(data)
     if self.ApplyMythicPlusTotalDeaths then self:ApplyMythicPlusTotalDeaths(data) end
 
     -- Ratings are derived from the meter values, so they are recomputed on
-    -- every render (late joiners and synced data can change them).
+    -- every render (late joiners and meter updates can change them).
     if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
 
     if not data.isEmpty then self.lastReport = data end

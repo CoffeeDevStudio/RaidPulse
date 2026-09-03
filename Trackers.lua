@@ -41,9 +41,6 @@ function MCA:RecordDefensive(player, spellID, source)
     local t = GetTime() - self.session.start
     local added = self:AddDefensiveToPlayer(player, spellID, t, source)
 
-    if added and player.name == UnitName("player") then
-        self:SendDefensive(spellID, t)
-    end
 end
 
 function MCA:UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID)
@@ -68,12 +65,12 @@ end
 -- Apply cause-of-death info to a death timeline event, mirroring it onto the
 -- player record. Safe to call after the event was already inserted: the
 -- timeline stores the table by reference, so a cause that only becomes
--- available a moment later (death recap, addon sync) still reaches the UI.
+-- available a moment later (the death recap) still reaches the UI.
 function MCA:DecorateDeathEvent(ev, cause, player)
     if not ev then return end
 
-    -- An empty spell name is truthy in Lua, and sync messages can carry one,
-    -- so check for actual content before claiming we know the cause.
+    -- An empty spell name is truthy in Lua, so check for actual content
+    -- before claiming we know the cause.
     if cause and type(cause.spellName) == "string" and cause.spellName ~= "" then
         ev.spellID    = cause.spellID
         ev.spellName  = cause.spellName
@@ -161,22 +158,15 @@ function MCA:MarkDead(unit)
     self:DecorateDeathEvent(ev, cause, player)
     self:AddTimelineEvent(ev)
 
-    if name == UnitName("player") then
-        local deathTime = player.deathTime
-        self:SendDeath(deathTime)
-
-        -- Then look up our own recap once it has filled in, patch the event we
-        -- just inserted, and tell the rest of the group what killed us so their
-        -- timeline shows the cause too.
-        if not cause then
-            C_Timer.After(0.6, function()
-                if not MCA then return end
-                local recap = MCA:GetLocalDeathCause()
-                if not recap then return end
-                MCA:DecorateDeathEvent(ev, recap, player)
-                if MCA.SendDeathCause then MCA:SendDeathCause(deathTime, recap) end
-            end)
-        end
+    -- Our own recap fills in a moment after the death, so read it then and
+    -- patch the event we just inserted. Only the local player's cause is
+    -- available: nothing is shared between clients any more.
+    if name == UnitName("player") and not cause then
+        C_Timer.After(0.6, function()
+            if not MCA then return end
+            local recap = MCA:GetLocalDeathCause()
+            if recap then MCA:DecorateDeathEvent(ev, recap, player) end
+        end)
     end
 end
 
@@ -292,8 +282,7 @@ end
 -- register COMBAT_LOG_EVENT_UNFILTERED on 12.0.7 because doing so raises the
 -- "action blocked" popup. It is kept because it is the only way to get a cause
 -- of death for players who are not running RaidPulse themselves; the supported
--- path is GetLocalDeathCause + SendDeathCause, which covers the local player
--- always and group members who have the addon.
+-- path is GetLocalDeathCause, which covers the local player only.
 function MCA:COMBAT_LOG_EVENT_UNFILTERED()
     if not self.session or not CombatLogGetCurrentEventInfo then return end
     local _, subevent, _, _, sourceName, _, _, destGUID, destName, _, _,

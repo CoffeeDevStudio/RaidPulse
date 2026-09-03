@@ -88,30 +88,6 @@ function MCA:CopyRosterToSession()
     end
 end
 
-function MCA:EnsureSessionPlayer(name, class, role, guid)
-    if not self.session or not name then return nil end
-
-    self.session.players = self.session.players or {}
-
-    if not self.session.players[name] then
-        self.session.players[name] = self:CreateEmptyPlayer(name, class, role, guid, nil)
-        self.session.players[name].hasAddon = true
-        self.session.players[name].synced = true
-        -- If we already have this GUID's spec from the inspect cache, apply it.
-        if guid and self.specCache and self.specCache[guid] then
-            self.session.players[name].specID = self.specCache[guid]
-        end
-    else
-        local p = self.session.players[name]
-        p.class = class or p.class
-        p.role = role or p.role
-        p.guid = guid or p.guid
-        p.hasAddon = true
-    end
-
-    return self.session.players[name]
-end
-
 function MCA:StartRaidEncounter(id, name)
     if self.session and self.session.type == "M+" then
         self.currentMythicBoss = {
@@ -138,7 +114,6 @@ function MCA:StartRaidEncounter(id, name)
     }
 
     self:CopyRosterToSession()
-    self:SendHello()
     if self.StartSessionWatcher then self:StartSessionWatcher() end
 
     self:Print("Raid encounter started: " .. tostring(name))
@@ -193,7 +168,6 @@ function MCA:StartMythicPlusSession()
     }
 
     self:CopyRosterToSession()
-    self:SendHello()
     if self.StartSessionWatcher then self:StartSessionWatcher() end
 
     self:Print("Mythic+ started")
@@ -698,16 +672,6 @@ function MCA:FinalizeSession(success, forceImmediate)
 
     self.lastReport = report
     self:SaveReportToHistory(report)
-    if self.SendReportSnapshot then
-        self:SendReportSnapshot(report)
-        C_Timer.After(0.7, function()
-            if MCA and MCA.lastReport == report then MCA:SendReportSnapshot(report) end
-        end)
-        C_Timer.After(2.0, function()
-            if MCA and MCA.lastReport == report then MCA:SendReportSnapshot(report) end
-        end)
-    end
-
     self.session = nil
     self.currentMythicBoss = nil
 

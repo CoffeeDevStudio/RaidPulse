@@ -12,7 +12,6 @@ MCA = _G.MCA
 RaidPulse = MCA
 
 MCA.VERSION = "1.0"
-MCA.PREFIX  = "RP10"        -- addon comm prefix (must be short)
 
 MCA.session       = nil
 MCA.roster        = {}
@@ -26,7 +25,6 @@ MCA.CONFIG_DEFAULTS = {
     showAfterKill      = true,
     showAfterWipe      = true,
     showMythicEnd      = true,
-    syncEnabled        = true,
     debug              = false,
     useElvUISkin       = true,
     autoOpen           = true,
