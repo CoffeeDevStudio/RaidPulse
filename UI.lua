@@ -6,36 +6,35 @@ MCA = _G.MCA
 -- of 1100, the history at x=20 with 1060, settings at 20 and the text summary
 -- at 24 — so the table visibly jumped sideways when switching tabs.
 --
--- The scroll child is 1140 wide; 12 on the left and the remainder on the right
--- leaves room for the scrollbar.
--- Scroll() insets its child by 4 and sizes it to CONTENT_W - 10, so these are
--- the margins *inside* that child: a small inset off the container border, and
--- a wider one on the right where the scrollbar sits.
-local PAGE_X = 8           -- left margin of page content, inside the scroll
-local PAGE_W = 1058        -- content width (child is 1090; 24 left for the scrollbar)
-local PAGE_H = 430         -- standard panel height
-local PAGE_PAD = 8         -- inner padding for text drawn straight onto the page
-
--- The rectangle everything occupies, in frame coordinates: the dashboard, the
--- summary panels, and the scroll container that holds every other tab. The
--- container used to sit at 154 with width 1150 while the dashboard sat at 170
--- with 1100, so the box visibly overhung the panels above it.
-local CONTENT_X = 170
-local CONTENT_W = 1100
-
--- One spacing value between blocks, on both axes, so nothing is "nearly"
--- evenly spaced. The sidebar sets where the body ends: every block bottoms out
--- level with it, rather than each stopping wherever its own hardcoded height
--- happened to land.
-local GAP = 16
-local SIDE_X, SIDE_Y = 8, -8
-local SIDE_W, SIDE_H = 138, 702
-local CONTENT_BOTTOM = SIDE_Y - SIDE_H       -- -710
-local DASH_Y, DASH_H = -36, 64               -- the KPI strip under the title
-local BODY_Y = DASH_Y - DASH_H - GAP         -- top of everything below it
-local BODY_H = math.abs(CONTENT_BOTTOM) - math.abs(BODY_Y)
+-- ---------------------------------------------------------------------------
+-- Layout. Everything is derived from the frame size, one margin and one gap,
+-- so the pieces cannot drift apart again: the window used to leave 8px on the
+-- left and 50 on the right because the content width was written out by hand.
+-- ---------------------------------------------------------------------------
 local FRAME_W, FRAME_H = 1320, 780
+local MARGIN = 8            -- same on the left, the right and the top
+local GAP = 16              -- between blocks, on both axes
 local BTN_H = 34
+
+local SIDE_X, SIDE_Y = MARGIN, -MARGIN
+local SIDE_W, SIDE_H = 138, 702
+local CONTENT_BOTTOM = SIDE_Y - SIDE_H            -- every block ends here
+
+-- The rectangle the dashboard, the summary and the scroll container share:
+-- one gap right of the sidebar, and the same margin on the right as the left.
+local CONTENT_X = SIDE_X + SIDE_W + GAP
+local CONTENT_W = FRAME_W - MARGIN - CONTENT_X
+
+local DASH_Y, DASH_H = -36, 64                    -- the KPI strip under the title
+local BODY_Y = DASH_Y - DASH_H - GAP              -- top of everything below it
+local BODY_H = math.abs(CONTENT_BOTTOM) - math.abs(BODY_Y)
+
+-- Margins *inside* the scroll: Scroll() insets its child by 4 and sizes it to
+-- CONTENT_W - 10, and the scrollbar sits over the right edge of that.
+local PAGE_X = 8
+local PAGE_W = CONTENT_W - 10 - PAGE_X - 24
+local PAGE_H = 430          -- panel height for the tabs that still use one
+local PAGE_PAD = 8          -- inner padding for text drawn straight onto the page
 
 MCA.ClassIconCoords = {
     WARRIOR={0,0.25,0,0.25}, MAGE={0.25,0.5,0,0.25}, ROGUE={0.5,0.75,0,0.25}, DRUID={0.75,1,0,0.25},
@@ -465,7 +464,9 @@ function MCA:DrawSidebar(root)
         self:Text(b, tab[1], "GameFontNormal", {"LEFT", b, "LEFT", 30, 0}, 92, active and self:UIColor("accent") or self:UIColor("white"))
         b:SetScript("OnClick", function()
             MCA.activeTab = tab[2]
-            MCA:BuildDashboard(MCA.lastReport)
+            -- Must not be MCA.lastReport: BuildDashboard bails on nil, so with
+            -- no report cached the whole sidebar silently stopped responding.
+            MCA:BuildDashboard(MCA:GetLastAvailableReport())
         end)
         y = y - 40
     end
@@ -548,12 +549,17 @@ function MCA:GetModeDifficultyText(data)
 end
 
 function MCA:DrawTopDashboard(root, data)
-    local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, DASH_Y}, 288, DASH_H, {0.018,0.021,0.024,0.50})
+    -- kpis and mode are sized by their contents; info takes whatever is left,
+    -- so the three always span CONTENT_W with two equal gaps.
+    local kpiW, modeW = 600, 180
+    local infoW = CONTENT_W - kpiW - modeW - GAP * 2
+
+    local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, DASH_Y}, infoW, DASH_H, {0.018,0.021,0.024,0.50})
     self:Text(info, data.boss or "Report", "GameFontHighlightLarge", {"TOPLEFT", info, "TOPLEFT", 16, -9}, 150, self:UIColor("purple"))
     self:Text(info, (data.result and "Completato" or "Wipe")..": "..(data.savedAt or date("%d/%m/%Y %H:%M")), "GameFontNormal", {"TOPLEFT", info, "TOPLEFT", 16, -36}, 220, self:UIColor("green"))
 
     local totals = self:GetTotals(data)
-    local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + 288 + GAP, DASH_Y}, 600, DASH_H, {0.018,0.021,0.024,0.72})
+    local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + infoW + GAP, DASH_Y}, kpiW, DASH_H, {0.018,0.021,0.024,0.72})
     local cells = {
         {"Boss", totals.bossKilled.."/"..totals.bosses, self:UIColor("accent")},
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
@@ -561,7 +567,7 @@ function MCA:DrawTopDashboard(root, data)
         {"Buff Raid", tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0), self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")},
         {"DPS Raid", self:FormatMetricValue(self:ComputeRaidDPS(data)), self:UIColor("accent")}
     }
-    local cellWidth = 120
+    local cellWidth = math.floor(kpiW / #cells)
     local x = 0
     for _, c in ipairs(cells) do
         local cell = CreateFrame("Frame", nil, kpis, "BackdropTemplate")
@@ -573,7 +579,7 @@ function MCA:DrawTopDashboard(root, data)
         x = x + cellWidth
     end
 
-    local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + CONTENT_W - 180, DASH_Y}, 180, DASH_H, {0.018,0.021,0.024,0.72})
+    local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + CONTENT_W - modeW, DASH_Y}, modeW, DASH_H, {0.018,0.021,0.024,0.72})
     local icon = mode:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("LEFT", 20, 0)
     icon:SetSize(36,36)
@@ -1596,6 +1602,9 @@ end
 
 -- MCA 4.0.29d restored real dashboard opener from 4.0.28
 function MCA:BuildDashboard(data)
+    -- Falling back rather than bailing: a caller with nothing to show still
+    -- wants the window rebuilt, on the newest report or on the empty one.
+    data = data or self:GetLastAvailableReport()
     if not data then return end
 
     -- MCA 4.3.6 apply M+ deaths before dashboard render
@@ -1628,11 +1637,11 @@ function MCA:BuildDashboard(data)
     -- left pair starts on the sidebar's edge, Chiudi ends on the content's
     -- right edge, and the row is one GAP below the body.
     local btnY = FRAME_H + CONTENT_BOTTOM - GAP - BTN_H
-    self:Button(root, "Esporta Report", {"BOTTOMLEFT", root, "BOTTOMLEFT", SIDE_X, btnY}, 150, BTN_H,
+    self:Button(root, "Esporta Report", {"BOTTOMLEFT", root, "BOTTOMLEFT", SIDE_X, btnY}, SIDE_W, BTN_H,
         function() MCA:ShowExportWindow(data) end)
-    self:Button(root, "Share in chat", {"BOTTOMLEFT", root, "BOTTOMLEFT", SIDE_X + 150 + GAP, btnY}, 150, BTN_H,
+    self:Button(root, "Share in chat", {"BOTTOMLEFT", root, "BOTTOMLEFT", CONTENT_X, btnY}, 150, BTN_H,
         function() MCA:ShareSummary(data) end)
-    self:Button(root, "Chiudi", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -(FRAME_W - (CONTENT_X + CONTENT_W)), btnY}, 120, BTN_H,
+    self:Button(root, "Chiudi", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -MARGIN, btnY}, 120, BTN_H,
         function() root:Hide() end)
 
     root:Show()
