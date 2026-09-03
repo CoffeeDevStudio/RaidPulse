@@ -490,7 +490,7 @@ function MCA:DrawTopDashboard(root, data)
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
         {"Deaths", tostring(totals.deaths), self:UIColor("red")},
         {"Buff Raid", tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0), self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")},
-        {"Boss HP", self:FormatBossHealth(data), self:GetBossHealthColor(data)}
+        {"DPS Raid", self:FormatMetricValue(self:ComputeRaidDPS(data)), self:UIColor("accent")}
     }
     local cellWidth = 126
     local x = 0
@@ -519,34 +519,31 @@ end
 -- Sub-1% wipes keep a decimal on purpose. Rounding a 0.4% wipe to "0%" would
 -- read as a kill, and the difference between those two is the whole point of
 -- the number.
--- Read the stored percentage defensively. Trackers.lua refuses to store a
--- protected ("secret") value, but a report can also arrive over sync or out of
--- SavedVariables written by an older build, and comparing one of those raises.
--- The UI must never be the thing that throws.
-function MCA:SafeBossHealthPct(data)
-    local pct = data and data.bossHealthPct
-    if type(pct) ~= "number" then return nil end
-    local ok = pcall(function() return pct >= 0 and pct <= 100 end)
-    if not ok then return nil end
-    return pct
+-- Damage per second for a player regardless of role. GetFightMetric returns
+-- healing for healers, which is right in a per-role table but wrong when
+-- summing one raid-wide damage figure.
+function MCA:GetPlayerDPS(player)
+    if not player then return 0 end
+
+    if player.blizzardDps and player.blizzardDps > 0 then return player.blizzardDps end
+    if player.blizzard and player.blizzard.dps and player.blizzard.dps.amountPerSecond then
+        return player.blizzard.dps.amountPerSecond
+    end
+    return player.dps or player.fightDPS or player.damagePerSecond or 0
 end
 
-function MCA:FormatBossHealth(data)
-    if data.result then return "0%" end
-
-    local pct = self:SafeBossHealthPct(data)
-    if not pct then return "-" end
-    if pct > 0 and pct < 1 then return string.format("%.1f%%", pct) end
-    return string.format("%d%%", math.floor(pct + 0.5))
-end
-
-function MCA:GetBossHealthColor(data)
-    if data.result then return self:UIColor("green") end
-
-    local pct = self:SafeBossHealthPct(data)
-    if not pct then return self:UIColor("gray") end
-    if pct <= 10 then return self:UIColor("orange") end
-    return self:UIColor("red")
+-- Total raid damage per second. Replaces the boss-health percentage, which
+-- 12.0.7 does not expose to addons at all: UnitHealth, UnitHealthMax and
+-- UnitPercentHealthFromGUID are all protected for boss units, and BigWigs
+-- gives up on the same wall. Unlike the old average score, this separates one
+-- attempt from another — a pull that died early and one that pushed look
+-- nothing alike.
+function MCA:ComputeRaidDPS(data)
+    local total = 0
+    for _, p in pairs((data and data.players) or {}) do
+        total = total + (tonumber(self:GetPlayerDPS(p)) or 0)
+    end
+    return total
 end
 
 function MCA:ComputeRaidScore(data)
@@ -1097,7 +1094,7 @@ function MCA:DrawHistoryPage(parent)
     self:Text(header, "Modalità", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 510, 0}, 130, self:UIColor("white"))
     self:Text(header, "Durata", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 660, 0}, 70, self:UIColor("white"))
     self:Text(header, "Esito", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 750, 0}, 70, self:UIColor("white"))
-    self:Text(header, "Boss HP", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
+    self:Text(header, "DPS Raid", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
 
     local y = -124
     local rowIndex = 0
@@ -1128,7 +1125,7 @@ function MCA:DrawHistoryPage(parent)
         self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510, 0}, 130, self:GetDifficultyColor(report.difficulty))
         self:Text(row, self:FormatTime(report.duration or 0), "GameFontNormalSmall", {"LEFT", row, "LEFT", 660, 0}, 70, self:UIColor("white"))
         self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750, 0}, 70, isKill and self:UIColor("green") or self:UIColor("red"))
-        self:Text(row, self:FormatBossHealth(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, self:GetBossHealthColor(report))
+        self:Text(row, self:FormatMetricValue(self:ComputeRaidDPS(report)), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, self:UIColor("accent"))
 
         self:Button(row, "Apri", {"RIGHT", row, "RIGHT", -84, 0}, 64, 22, function()
             MCA.activeTab = "summary"

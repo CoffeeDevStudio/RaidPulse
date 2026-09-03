@@ -119,10 +119,6 @@ function MCA:StartRaidEncounter(id, name)
             name = name,
             startTime = GetTime() - self.session.start
         }
-        -- Boss health is tracked per engagement, so a new pull inside a key
-        -- starts fresh: the reported percentage always describes the most
-        -- recent boss, not the lowest one reached anywhere in the run.
-        self.session.bossHPLow = nil
         self:Debug("M+ boss started: " .. tostring(name))
         return
     end
@@ -673,20 +669,12 @@ end
 function MCA:FinalizeSession(success, forceImmediate)
     if not self.session then return end
 
-    -- One last reading before the watcher stops: the ticker samples every
-    -- 0.5s, and this catches the final sliver of health on a very close wipe.
-    -- Harmless once the boss frames are gone — the sampler skips empty reads.
-    tryStep(self, "SampleBossHealth")
     tryStep(self, "StopSessionWatcher")
     tryStep(self, "ScanAllAuras")
     tryStep(self, "ScanAllDebuffs")
 
     self.session.duration = GetTime() - self.session.start
     self.session.result = success == true
-
-    -- How much of the boss was left standing. A kill is 0% by definition;
-    -- a wipe reports the lowest health the encounter reached.
-    self.session.bossHealthPct = self.session.result and 0 or self.session.bossHPLow
 
     local mcaMode, mcaDifficulty = self:GetCurrentModeDifficulty()
     self.session.mode = self.session.mode or mcaMode
