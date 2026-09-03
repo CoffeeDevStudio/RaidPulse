@@ -379,6 +379,52 @@ function MCA:GetRaidBuffSummary(data)
     return present, active, missing
 end
 
+-- Snapshot the raid's buff state onto the running session. CaptureRaidBuffs
+-- was fully implemented but only ever called by the standalone /rp buffs
+-- window, so a report never carried buff data: the dashboard cell read 0/0 and
+-- the Buff Raid tab was permanently empty.
+--
+-- The pull is the moment worth recording — buffs applied after it are too late
+-- to matter, and by the end of the fight the dead have lost theirs.
+function MCA:CaptureSessionRaidBuffs()
+    if not self.session then return end
+
+    local ok, buffs, matrix = pcall(self.CaptureRaidBuffs, self)
+    if not ok or type(buffs) ~= "table" then return end
+
+    self.session.raidBuffs = buffs
+    self.session.raidBuffMatrix = matrix
+end
+
 function MCA:BuildRaidBuffRows(data)
-    return {}
+    local rows = {}
+
+    for _, buff in ipairs((data and data.raidBuffs) or {}) do
+        local total = buff.total or 0
+        local missing = buff.missing or 0
+        local covered = total - missing
+
+        local status, statusColor
+        if not buff.classPresent then
+            status, statusColor = "Nessuna classe", self:UIColor("gray")
+        elseif buff.optional then
+            status, statusColor = "Opzionale", self:UIColor("gray")
+        elseif buff.active then
+            status, statusColor = "OK", self:UIColor("green")
+        else
+            status, statusColor = missing .. " senza", self:UIColor("red")
+        end
+
+        rows[#rows + 1] = {
+            {x=10,  w=45,  text="", spellID = buff.spellID},
+            {x=60,  w=180, text = buff.name or buff.key or "?"},
+            {x=260, w=120, text = self:PrettyClass(buff.class), color = self:UIColor("gray")},
+            {x=400, w=70,  text = total > 0 and (covered .. "/" .. total) or "-",
+             justify = "CENTER",
+             color = (missing == 0) and self:UIColor("green") or self:UIColor("orange")},
+            {x=500, w=90,  text = status, justify = "CENTER", color = statusColor},
+        }
+    end
+
+    return rows
 end

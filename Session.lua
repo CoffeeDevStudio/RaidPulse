@@ -114,6 +114,7 @@ function MCA:StartRaidEncounter(id, name)
     }
 
     self:CopyRosterToSession()
+    if self.CaptureSessionRaidBuffs then self:CaptureSessionRaidBuffs() end
     if self.StartSessionWatcher then self:StartSessionWatcher() end
 
     self:Print("Raid encounter started: " .. tostring(name))
@@ -168,6 +169,7 @@ function MCA:StartMythicPlusSession()
     }
 
     self:CopyRosterToSession()
+    if self.CaptureSessionRaidBuffs then self:CaptureSessionRaidBuffs() end
     if self.StartSessionWatcher then self:StartSessionWatcher() end
 
     self:Print("Mythic+ started")

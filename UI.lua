@@ -1526,11 +1526,11 @@ function MCA:DrawFullPage(root, data)
 
     elseif self.activeTab == "buffs" then
         y = self:DrawPageTable(child, {
-            {label="Icona",  x=10,  w=45},
-            {label="Debuff", x=60,  w=180},
-            {label="Player", x=260, w=120},
-            {label="Stack",  x=400, w=70},
-            {label="Durata", x=500, w=90},
+            {label="",           x=10,  w=45},
+            {label="Buff",       x=60,  w=180},
+            {label="Classe",     x=260, w=120},
+            {label="Copertura",  x=400, w=70,  justify="CENTER"},
+            {label="Stato",      x=500, w=90,  justify="CENTER"},
         }, self:BuildRaidBuffRows(data), y)
 
     elseif self.activeTab == "timeline" then
