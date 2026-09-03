@@ -118,13 +118,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
     elseif msg == "debug off" then
         RaidPulseDB.config.debug = false
         MCA:Print("debug OFF")
-    elseif msg == "sync on" then
-        RaidPulseDB.config.syncEnabled = true
-        MCA:SendHello()
-        MCA:Print("sync ON")
-    elseif msg == "sync off" then
-        RaidPulseDB.config.syncEnabled = false
-        MCA:Print("sync OFF")
     elseif msg == "export" then
         MCA:ShowExportWindow(MCA.lastReport)
     elseif msg == "share" then
@@ -167,6 +160,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             end
         end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp sync on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher")
     end
 end

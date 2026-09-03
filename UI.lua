@@ -478,7 +478,6 @@ function MCA:DrawSidebar(root)
         y = y - 40
     end
 
-    self:Text(side, "Sync: "..(RaidPulseDB.config.syncEnabled and "ON" or "OFF"), "GameFontNormal", {"BOTTOMLEFT", side, "BOTTOMLEFT", 14, 72}, 105, RaidPulseDB.config.syncEnabled and self:UIColor("green") or self:UIColor("red"))
 end
 
 
@@ -571,9 +570,19 @@ function MCA:DrawTopDashboard(root, data)
         {"Boss", totals.bossKilled.."/"..totals.bosses, self:UIColor("accent")},
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
         {"Deaths", tostring(totals.deaths), self:UIColor("red")},
-        {"Buff Raid", tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0), self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")},
-        {"DPS Raid", self:FormatMetricValue(self:ComputeRaidDPS(data)), self:UIColor("accent")}
     }
+
+    -- Raid buffs are a raid concern; a key has no raid-wide buff check to
+    -- report, so the cell would always read 0/0. Dropping it also lets the
+    -- remaining cells share the strip evenly rather than leaving a dead one.
+    if data.type ~= "M+" then
+        cells[#cells + 1] = {"Buff Raid",
+            tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0),
+            self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")}
+    end
+
+    cells[#cells + 1] = {"Average DPS",
+        self:FormatMetricValue(self:ComputeAverageDPS(data)), self:UIColor("accent")}
     local cellWidth = math.floor(kpiW / #cells)
     local x = 0
     for _, c in ipairs(cells) do
@@ -620,6 +629,19 @@ end
 -- gives up on the same wall. Unlike the old average score, this separates one
 -- attempt from another — a pull that died early and one that pushed look
 -- nothing alike.
+-- Mean damage per player. Unlike the raw total it stays comparable between a
+-- five-player key and a twenty-five player raid, which is what makes it worth
+-- a slot in a strip that both modes share.
+function MCA:ComputeAverageDPS(data)
+    local total, count = 0, 0
+    for _, p in pairs((data and data.players) or {}) do
+        total = total + (tonumber(self:GetPlayerDPS(p)) or 0)
+        count = count + 1
+    end
+    if count == 0 then return 0 end
+    return total / count
+end
+
 function MCA:ComputeRaidDPS(data)
     local total = 0
     for _, p in pairs((data and data.players) or {}) do
@@ -1168,7 +1190,7 @@ function MCA:DrawHistoryPage(parent)
     self:Text(header, "Modalità", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 510, 0}, 130, self:UIColor("white"))
     self:Text(header, "Durata", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 660, 0}, 70, self:UIColor("white"))
     self:Text(header, "Esito", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 750, 0}, 70, self:UIColor("white"))
-    self:Text(header, "DPS Raid", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
+    self:Text(header, "Avg DPS", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
 
     local y = -124
     local rowIndex = 0
@@ -1199,7 +1221,7 @@ function MCA:DrawHistoryPage(parent)
         self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510, 0}, 130, self:GetDifficultyColor(report.difficulty))
         self:Text(row, self:FormatTime(report.duration or 0), "GameFontNormalSmall", {"LEFT", row, "LEFT", 660, 0}, 70, self:UIColor("white"))
         self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750, 0}, 70, isKill and self:UIColor("green") or self:UIColor("red"))
-        self:Text(row, self:FormatMetricValue(self:ComputeRaidDPS(report)), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, self:UIColor("accent"))
+        self:Text(row, self:FormatMetricValue(self:ComputeAverageDPS(report)), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, self:UIColor("accent"))
 
         self:Button(row, "Apri", {"RIGHT", row, "RIGHT", -84, 0}, 64, 22, function()
             MCA.activeTab = "summary"
@@ -1306,7 +1328,6 @@ function MCA:DrawFullPage(root, data)
 
     if self.activeTab == "settings" then
         local settings = {
-            {"Sync", "syncEnabled"},
             {"Debug", "debug"},
             {"ElvUI Skin", "useElvUISkin"},
             {"Auto Open", "autoOpen"},
@@ -1486,7 +1507,10 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
     local outerH = parent:GetHeight() - 50
     local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -40}, outerW, outerH, {0.018,0.020,0.022,0.55}, true)
 
-    local tableW = outerW - 28
+    -- TableHeader sizes itself to the scroll child, so the rows have to use
+    -- that same width or they stop short of the header — an 18px shortfall
+    -- that showed as the header overhanging every row on its right.
+    local tableW = outerW - 10
     local metricLabel = wantHealer and "HPS" or "DPS"
 
     local cols = {
