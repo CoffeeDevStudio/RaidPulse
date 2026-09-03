@@ -268,8 +268,10 @@ function MCA:CreateMinimapButton()
 
     button:SetScript("OnClick", function(_, mouseButton)
         if mouseButton == "RightButton" then
-            if MCA.lastReport then
-                if MCA.ShowUI then MCA:ShowUI(MCA:GetLastAvailableReport()) end
+            -- Gated on the saved history too, not just the in-memory report.
+            local report = MCA:GetLastAvailableReport()
+            if report and not report.isEmpty then
+                if MCA.ShowUI then MCA:ShowUI(report) end
             else
                 MCA:Print("Nessun report disponibile.")
             end

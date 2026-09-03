@@ -98,7 +98,14 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         })
 
     elseif msg == "" or msg == "show" then
-        if MCA.lastReport then MCA:ShowUI(MCA.lastReport) else MCA:Print("Nessun report disponibile.") end
+        -- Falls back to the newest saved report, so this works after a
+        -- reload and after the in-memory one has been cleared.
+        local report = MCA:GetLastAvailableReport()
+        if report and not report.isEmpty then
+            MCA:ShowUI(report)
+        else
+            MCA:Print("Nessun report disponibile.")
+        end
     elseif msg == "buffs" or msg == "raidbuffs" then
         if MCA.ShowRaidBuffWindow then MCA:ShowRaidBuffWindow() end
     elseif msg == "minimap" then

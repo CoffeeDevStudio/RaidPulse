@@ -34,6 +34,8 @@ local CONTENT_BOTTOM = SIDE_Y - SIDE_H       -- -710
 local DASH_Y, DASH_H = -36, 64               -- the KPI strip under the title
 local BODY_Y = DASH_Y - DASH_H - GAP         -- top of everything below it
 local BODY_H = math.abs(CONTENT_BOTTOM) - math.abs(BODY_Y)
+local FRAME_W, FRAME_H = 1320, 780
+local BTN_H = 34
 
 MCA.ClassIconCoords = {
     WARRIOR={0,0.25,0,0.25}, MAGE={0.25,0.5,0,0.25}, ROGUE={0.5,0.75,0,0.25}, DRUID={0.75,1,0,0.25},
@@ -324,11 +326,21 @@ function MCA:CountCDsInWindow(data, startTime, endTime)
 end
 
 function MCA:MainFrame()
+    -- Clicking a sidebar tab rebuilds the whole frame, so a window the player
+    -- had dragged somewhere jumped back to the middle of the screen every
+    -- time. Carry the position across the rebuild, and remember it in the DB
+    -- so it also survives a reload.
     local old = _G.MCAFrame
-    if old then old:Hide(); old:SetParent(nil); _G.MCAFrame = nil end
+    if old then
+        local point, _, relPoint, x, yOff = old:GetPoint()
+        if point then
+            RaidPulseDB.framePos = {point = point, relPoint = relPoint, x = x, y = yOff}
+        end
+        old:Hide(); old:SetParent(nil); _G.MCAFrame = nil
+    end
 
     local f = CreateFrame("Frame", "MCAFrame", UIParent, "BackdropTemplate")
-    f:SetSize(1320, 780)
+    f:SetSize(FRAME_W, FRAME_H)
 
     if UISpecialFrames then
         local found = false
@@ -346,14 +358,25 @@ function MCA:MainFrame()
     f:SetScript("OnHide", function()
         if MCA.MinimapMenu and MCA.MinimapMenu:IsShown() then MCA.MinimapMenu:Hide() end
     end)
-    f:SetPoint("CENTER")
+    local pos = RaidPulseDB and RaidPulseDB.framePos
+    if pos and pos.point then
+        f:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+    else
+        f:SetPoint("CENTER")
+    end
     f:SetFrameStrata("DIALOG")
     f:SetFrameLevel(100)
     f:SetMovable(true)
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetScript("OnDragStop", function(frame)
+        frame:StopMovingOrSizing()
+        local point, _, relPoint, x, yOff = frame:GetPoint()
+        if point then
+            RaidPulseDB.framePos = {point = point, relPoint = relPoint, x = x, y = yOff}
+        end
+    end)
     self:SetBackdropSolid(f, self:UIColor("bg"), {0.28,0.28,0.30,1})
 
     self:Text(f, "RaidPulse v"..(self.VERSION or "?"), "GameFontHighlightLarge", {"TOP", f, "TOP", 0, -10}, 460, self:UIColor("accent"), "CENTER")
@@ -455,6 +478,10 @@ end
 
 function MCA:GetEmptyReport()
     return {
+        -- Flagged so BuildDashboard does not adopt it as lastReport: doing so
+        -- made the placeholder stick, and every later rebuild showed an empty
+        -- dashboard even with history still saved.
+        isEmpty = true,
         boss = "Nessun report",
         type = "raid",
         mode = "Raid",
@@ -471,7 +498,15 @@ function MCA:GetEmptyReport()
 end
 
 function MCA:GetLastAvailableReport()
-    if self.lastReport then return self.lastReport end
+    -- A report that has been deleted from the history must not linger on the
+    -- dashboard, so the cached one is only used while it is still saved.
+    if self.lastReport and not self.lastReport.isEmpty then
+        if not self.lastReport.historyID then return self.lastReport end
+        for _, r in ipairs((RaidPulseDB and RaidPulseDB.history) or {}) do
+            if r.historyID == self.lastReport.historyID then return self.lastReport end
+        end
+        self.lastReport = nil
+    end
 
     if RaidPulseDB and RaidPulseDB.history and #RaidPulseDB.history > 0 then
         return RaidPulseDB.history[#RaidPulseDB.history]
@@ -1075,7 +1110,7 @@ function MCA:DrawHistoryPage(parent)
     local function selectFilter(value)
         MCA.historyFilter = value
         MCA.activeTab = "history"
-        MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
+        MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end
 
     self:Text(parent, "Esito:", "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 268, -56}, 46, self:UIColor("gray"))
@@ -1109,7 +1144,7 @@ function MCA:DrawHistoryPage(parent)
             MCA:ClearHistory()
         end
         MCA.activeTab = "history"
-        MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
+        MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end, true)
 
     local header = CreateFrame("Frame", nil, parent, "BackdropTemplate")
@@ -1165,7 +1200,7 @@ function MCA:DrawHistoryPage(parent)
         self:Button(row, "X", {"RIGHT", row, "RIGHT", -12, 0}, 28, 22, function()
             table.remove(RaidPulseDB.history, i)
             MCA.activeTab = "history"
-            MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
+            MCA:BuildDashboard(MCA:GetLastAvailableReport())
         end, true)
 
         row:SetScript("OnClick", function()
@@ -1570,7 +1605,7 @@ function MCA:BuildDashboard(data)
     -- every render (late joiners and synced data can change them).
     if self.ApplyClassBasedRatings then self:ApplyClassBasedRatings(data) end
 
-    self.lastReport = data
+    if not data.isEmpty then self.lastReport = data end
 
     local old = _G.MCAFrame
     if old then old:Hide(); old:SetParent(nil); _G.MCAFrame = nil end
@@ -1589,14 +1624,16 @@ function MCA:BuildDashboard(data)
         self:DrawFullPage(root, data)
     end
 
-    self:Button(root, "Esporta Report", {"BOTTOMLEFT", root, "BOTTOMLEFT", 16, 18}, 150, 34, function() MCA:ShowExportWindow(data) end)
-    self:Button(root, "Share in chat", {"BOTTOMLEFT", root, "BOTTOMLEFT", 178, 18}, 150, 34, function() MCA:ShareSummary(data) end)
-    self:Button(root, "Cancella Dati", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -150, 18}, 130, 34, function()
-        MCA.lastReport = nil
-        if _G.MCAFrame then _G.MCAFrame:Hide() end
-        MCA:Print("Dati report cancellati.")
-    end, true)
-    self:Button(root, "Chiudi", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -16, 18}, 120, 34, function() root:Hide() end)
+    -- The button row sits on the same rectangle as everything above it: the
+    -- left pair starts on the sidebar's edge, Chiudi ends on the content's
+    -- right edge, and the row is one GAP below the body.
+    local btnY = FRAME_H + CONTENT_BOTTOM - GAP - BTN_H
+    self:Button(root, "Esporta Report", {"BOTTOMLEFT", root, "BOTTOMLEFT", SIDE_X, btnY}, 150, BTN_H,
+        function() MCA:ShowExportWindow(data) end)
+    self:Button(root, "Share in chat", {"BOTTOMLEFT", root, "BOTTOMLEFT", SIDE_X + 150 + GAP, btnY}, 150, BTN_H,
+        function() MCA:ShareSummary(data) end)
+    self:Button(root, "Chiudi", {"BOTTOMRIGHT", root, "BOTTOMRIGHT", -(FRAME_W - (CONTENT_X + CONTENT_W)), btnY}, 120, BTN_H,
+        function() root:Hide() end)
 
     root:Show()
 end
