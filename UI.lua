@@ -103,8 +103,8 @@ local widgetPools = {}      -- "type|template" -> free frames
 local liveWidgets = {}      -- handed out since the last recycle
 local poolAttic            -- parent for parked frames; created on first use
 
-local function poolKeyFor(ftype, template)
-    return (ftype or "Frame") .. "|" .. (template or "")
+local function poolKeyFor(ftype, template, tag)
+    return (ftype or "Frame") .. "|" .. (template or "") .. "|" .. (tag or "")
 end
 
 -- Reset the per-frame cursors so its fontstrings and textures are handed out
@@ -114,8 +114,11 @@ local function resetWidgetCursors(f)
     f._rpTexCursor = 0
 end
 
-function MCA:AcquireFrame(ftype, parent, template)
-    local key = poolKeyFor(ftype, template)
+-- `tag` separates pools for frames that share a type and template but not a
+-- role. Without it a scroll child and a spell-icon frame were both "Frame|"
+-- and could be handed to each other's job.
+function MCA:AcquireFrame(ftype, parent, template, tag)
+    local key = poolKeyFor(ftype, template, tag)
     local pool = widgetPools[key]
     local f = pool and table.remove(pool)
 
@@ -213,7 +216,7 @@ function MCA:RecycleWidgets()
         f:ClearAllPoints()
         f:SetParent(poolAttic)
 
-        local key = f._rpPoolKey or poolKeyFor("Frame", nil)
+        local key = f._rpPoolKey or poolKeyFor("Frame", nil, nil)
         widgetPools[key] = widgetPools[key] or {}
         table.insert(widgetPools[key], f)
     end
@@ -299,17 +302,43 @@ end
 local TRANSPARENT = {0, 0, 0, 0}
 
 function MCA:Scroll(parent, point, w, h, bg, flush)
-    local outer = self:Panel(parent, point, w, h,
-        flush and TRANSPARENT or bg,
-        flush and TRANSPARENT or nil)
-    local scroll = self:AcquireFrame("ScrollFrame", outer, "UIPanelScrollFrameTemplate")
+    -- Tagged so scroll containers keep their own pool: a recycled plain panel
+    -- must never be handed out as one, because the scroll frame and its child
+    -- ride along with it.
+    local outer = self:AcquireFrame("Frame", parent, "BackdropTemplate", "scroll")
+    outer:SetPoint(unpack(point))
+    outer:SetSize(w, h)
+    self:SetBackdropSolid(outer,
+        flush and TRANSPARENT or (bg or self:UIColor("panel")),
+        flush and TRANSPARENT or self:UIColor("border"))
+
+    -- The scroll frame and its child are created once per container and never
+    -- pooled. Reparenting a frame that is still registered as some scroll
+    -- frame's child leaves a dangling pointer on the C side and crashes the
+    -- client outright — which is exactly what happened when scroll children
+    -- shared a pool with the spell-icon frames.
+    local scroll = outer.rpScroll
+    if not scroll then
+        scroll = CreateFrame("ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
+        outer.rpScroll = scroll
+    end
     scroll:SetPoint("TOPLEFT", 4, -4)
     scroll:SetPoint("BOTTOMRIGHT", -4, 4)
+    scroll:Show()
 
-    local child = self:AcquireFrame("Frame", scroll)
+    local child = scroll.rpChild
+    if not child then
+        child = CreateFrame("Frame", nil, scroll)
+        scroll.rpChild = child
+        scroll:SetScrollChild(child)
+    end
     child:SetSize(w - 10, h - 8)
-    scroll:SetScrollChild(child)
-    -- A recycled scroll keeps the offset its previous table was left at, which
+    child:Show()
+    -- Kept out of the pool, so its own fontstring cursors are rewound here.
+    child._rpTextCursor = 0
+    child._rpTexCursor = 0
+
+    -- A reused scroll keeps the offset its previous table was left at, which
     -- would open the next tab already scrolled down.
     scroll:SetVerticalScroll(0)
 
@@ -401,7 +430,7 @@ function MCA:ClassIcon(parent, class, x, y, size)
 end
 
 function MCA:SpellIcon(parent, spellID, x, y, size, label)
-    local f = self:AcquireFrame("Frame", parent)
+    local f = self:AcquireFrame("Frame", parent, nil, "spellicon")
     f:SetPoint("TOPLEFT", x, y)
     f:SetSize(size, size + (label and 12 or 0))
     f:EnableMouse(true)
