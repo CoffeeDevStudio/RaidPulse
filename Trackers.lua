@@ -259,13 +259,30 @@ local function isUsableNumber(v)
     return (pcall(function() return v >= 0 and v <= 100 end))
 end
 
+-- Once a reader is known to work, stay on it. Whether the unit API is
+-- protected is a property of the client, not of the moment, so re-running the
+-- reader that raises — twice a second for a whole fight — buys nothing but
+-- thrown exceptions. Reset per pull, so a client that starts exposing the
+-- values again is picked up.
+local preferredReader = nil
+
 -- Try each reader and return the first usable percentage, along with the name
 -- of the reader that produced it. Returns nil when no reader could produce a
 -- number — which is the normal case outside a boss engagement.
 function MCA:ReadBossHealth()
+    if preferredReader then
+        local ok, pct = pcall(preferredReader.fn)
+        if ok and pct ~= nil and isUsableNumber(pct) then
+            return pct, preferredReader.name
+        end
+        -- Stopped working: fall through and probe them all again.
+        preferredReader = nil
+    end
+
     for _, reader in ipairs(BOSS_HEALTH_READERS) do
         local ok, pct = pcall(reader.fn)
         if ok and pct ~= nil and isUsableNumber(pct) then
+            preferredReader = reader
             return pct, reader.name
         end
     end
@@ -354,6 +371,7 @@ function MCA:StartSessionWatcher()
     -- in case the first failure was situational rather than a client-wide rule.
     bossHealthUnavailable = false
     bossReadFailures = 0
+    preferredReader = nil
     if not C_Timer or not C_Timer.NewTicker then return end
     sessionTicker = C_Timer.NewTicker(POLL_INTERVAL, pollSession)
 end
@@ -394,9 +412,11 @@ function MCA:ReportWatcherState()
     for i = 1, MAX_BOSS_UNITS do
         if UnitExists("boss" .. i) then bossUnits = bossUnits + 1 end
     end
-    self:Print(string.format("  Boss HP: unita' boss presenti=%d | sampler=%s | minimo finora=%s",
+    self:Print(string.format("  Boss HP: unita' boss presenti=%d | sampler=%s | "
+        .. "lettore in uso=%s | minimo finora=%s",
         bossUnits,
         bossHealthUnavailable and "DISATTIVATO" or "attivo",
+        preferredReader and preferredReader.name or "nessuno",
         self.session.bossHPLow and string.format("%.1f%%", self.session.bossHPLow) or "nessuno"))
 
     for _, reader in ipairs(BOSS_HEALTH_READERS) do
