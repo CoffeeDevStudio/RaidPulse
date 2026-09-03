@@ -1180,6 +1180,53 @@ function MCA:DrawHistoryPage(parent)
     return math.abs(y) + 80
 end
 
+-- Draw a table straight onto the page, the way the history tab does: no
+-- wrapping panel, no inner scroll nested inside the page's own, and no second
+-- copy of the title the page header already shows.
+--
+-- Row geometry matches the history exactly (28px header, 30px rows on a 32px
+-- pitch) so the tabs are indistinguishable apart from their columns. Returns
+-- the y below the last row, so the caller keeps growing the page scroll.
+function MCA:DrawPageTable(parent, headers, rows, y)
+    local header = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    header:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
+    header:SetSize(PAGE_W, 28)
+    self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
+
+    for _, c in ipairs(headers or {}) do
+        self:Text(header, c.label, "GameFontHighlightSmall",
+            {"LEFT", header, "LEFT", c.x, 0}, c.w, self:UIColor("white"), c.justify)
+    end
+
+    y = y - 32
+
+    if #(rows or {}) == 0 then
+        self:Text(parent, "Nessun dato registrato.", "GameFontNormal",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, 620, self:UIColor("gray"))
+        return y - 40
+    end
+
+    for i, rowData in ipairs(rows) do
+        local row = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+        row:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
+        row:SetSize(PAGE_W, 30)
+        self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+
+        for _, cell in ipairs(rowData) do
+            if cell.spellID then self:SpellIcon(row, cell.spellID, cell.x, -6, 18) end
+            local textX = cell.x + (cell.spellID and 25 or 0)
+            local textW = (cell.w or 80) - (cell.spellID and 25 or 0)
+            self:Text(row, cell.text or "", "GameFontNormalSmall",
+                {"LEFT", row, "LEFT", textX, 0}, textW,
+                cell.color or self:UIColor("white"), cell.justify or "LEFT")
+        end
+
+        y = y - 32
+    end
+
+    return y
+end
+
 function MCA:DrawFullPage(root, data)
     local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", 154, -112}, 1150, 535, {0.018,0.020,0.022,0.65})
 
@@ -1232,36 +1279,39 @@ function MCA:DrawFullPage(root, data)
         y = y - 450
 
     elseif self.activeTab == "deaths" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         local deathCols = {
             time   = {x=10,  w=70},
             player = {x=90,  w=200},
             boss   = {x=300, w=260},
             extra  = {x=570, w=400}
         }
-        self:DrawSmallPanel(panel, "Deaths", nil, "red",
-            {{label="Tempo",x=deathCols.time.x,w=deathCols.time.w},{label="Player",x=deathCols.player.x,w=deathCols.player.w},{label="Boss",x=deathCols.boss.x,w=deathCols.boss.w},{label="Causa",x=deathCols.extra.x,w=deathCols.extra.w}},
-            self:BuildDeathsRows(data, deathCols))
-        y = y - 450
+        y = self:DrawPageTable(child, {
+            {label="Tempo",  x=deathCols.time.x,   w=deathCols.time.w},
+            {label="Player", x=deathCols.player.x, w=deathCols.player.w},
+            {label="Boss",   x=deathCols.boss.x,   w=deathCols.boss.w},
+            {label="Causa",  x=deathCols.extra.x,  w=deathCols.extra.w},
+        }, self:BuildDeathsRows(data, deathCols), y)
 
     elseif self.activeTab == "buffs" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
-        self:DrawSmallPanel(panel, "Buff Raid", nil, "purple",
-            {{label="Icona",x=10,w=45},{label="Debuff",x=60,w=180},{label="Player",x=260,w=120},{label="Stack",x=400,w=70},{label="Durata",x=500,w=90}},
-            self:BuildRaidBuffRows(data))
-        y = y - 450
+        y = self:DrawPageTable(child, {
+            {label="Icona",  x=10,  w=45},
+            {label="Debuff", x=60,  w=180},
+            {label="Player", x=260, w=120},
+            {label="Stack",  x=400, w=70},
+            {label="Durata", x=500, w=90},
+        }, self:BuildRaidBuffRows(data), y)
 
     elseif self.activeTab == "timeline" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         local tlCols = {
             time   = {x=10,  w=70},
             event  = {x=90,  w=460},
             player = {x=560, w=160}
         }
-        self:DrawSmallPanel(panel, "Timeline", nil, "blue",
-            {{label="Tempo",x=tlCols.time.x,w=tlCols.time.w},{label="Evento",x=tlCols.event.x,w=tlCols.event.w},{label="Player",x=tlCols.player.x,w=tlCols.player.w}},
-            self:BuildTimelineRows(data, tlCols))
-        y = y - 450
+        y = self:DrawPageTable(child, {
+            {label="Tempo",  x=tlCols.time.x,   w=tlCols.time.w},
+            {label="Evento", x=tlCols.event.x,  w=tlCols.event.w},
+            {label="Player", x=tlCols.player.x, w=tlCols.player.w},
+        }, self:BuildTimelineRows(data, tlCols), y)
 
     elseif self.activeTab == "history" then
         y = -50 - self:DrawHistoryPage(child)
