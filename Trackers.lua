@@ -201,6 +201,38 @@ local bossReadFailures = 0
 -- boss frames yet is not written off.
 local BOSS_READ_GIVE_UP = 240
 
+-- Every failure so far has been "attempt to COMPARE" — never a read, never
+-- arithmetic. So route the value through string formatting, which produces an
+-- ordinary string, and parse a plain number back out of it. If the client
+-- refuses to format a protected value the pcall catches it and we have lost
+-- nothing.
+local function launder(v)
+    if v == nil then return nil end
+    local ok, s = pcall(string.format, "%.4f", v)
+    if not ok then return nil end
+    return tonumber(s)
+end
+
+-- Reader 0: the unit API, with every value laundered before it is compared.
+local function readBossHealthLaundered()
+    local cur, maxHP = 0, 0
+    for i = 1, MAX_BOSS_UNITS do
+        local unit = "boss" .. i
+        if UnitExists(unit) then
+            local h = launder(UnitHealth(unit))
+            local hm = launder(UnitHealthMax(unit))
+            -- Plain numbers by this point, so comparing them is safe.
+            if h and hm and hm > 0 then
+                cur = cur + h
+                maxHP = maxHP + hm
+            end
+        end
+    end
+
+    if maxHP <= 0 then return nil end
+    return (cur / maxHP) * 100
+end
+
 -- Reader 1: the unit API. Direct and exact, but this is the one that hands
 -- back protected values on 12.0.7.
 local function readBossHealthFromUnits()
@@ -255,8 +287,11 @@ local function readBossHealthFromFrames()
     for i = 1, MAX_BOSS_UNITS do
         local bar = findBossBar(i)
         if bar then
-            local v = bar:GetValue()
+            -- Bars fed from protected health hand protected numbers straight
+            -- back out of GetValue/GetMinMaxValues, so launder these too.
+            local v = launder(bar:GetValue())
             local lo, hi = bar:GetMinMaxValues()
+            lo, hi = launder(lo), launder(hi)
             if v and lo and hi and hi > lo then
                 cur = cur + (v - lo)
                 maxHP = maxHP + (hi - lo)
@@ -269,8 +304,9 @@ local function readBossHealthFromFrames()
 end
 
 local BOSS_HEALTH_READERS = {
-    { name = "unit",  fn = readBossHealthFromUnits },
-    { name = "frame", fn = readBossHealthFromFrames },
+    { name = "laundered", fn = readBossHealthLaundered },
+    { name = "unit",      fn = readBossHealthFromUnits },
+    { name = "frame",     fn = readBossHealthFromFrames },
 }
 
 -- A secret value survives being returned from the pcall above, so it has to be
@@ -455,6 +491,32 @@ function MCA:ReportWatcherState()
         else
             self:Print(string.format("    lettura '%s': %.1f%% OK", reader.name, pct))
         end
+    end
+
+    -- Which operations does this client actually allow on a protected value?
+    -- Every failure so far has been a comparison, so if formatting is permitted
+    -- the value can be laundered into an ordinary number and the whole feature
+    -- works. This settles that in one line instead of another raid night.
+    if UnitExists("boss1") then
+        local raw = UnitHealth("boss1")
+        local probes = {
+            { "lettura", function() return raw ~= nil end },
+            { "tostring", function() return tostring(raw) end },
+            { "format", function() return string.format("%.1f", raw) end },
+            { "somma", function() return raw + 0 end },
+            { "confronto", function() return raw > 0 end },
+            { "math.floor", function() return math.floor(raw) end },
+        }
+        local results = {}
+        for _, probe in ipairs(probes) do
+            local ok, res = pcall(probe[2])
+            results[#results + 1] = probe[1] .. "=" .. (ok and "OK" or "NO")
+            if ok and probe[1] == "format" then
+                results[#results] = results[#results] .. "(" .. tostring(res) .. ")"
+            end
+        end
+        self:Print("    operazioni permesse su valore protetto: "
+            .. table.concat(results, " "))
     end
 
     -- Per-frame detail. A bar that is shown but not visible has been orphaned
