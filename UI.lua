@@ -1186,7 +1186,13 @@ function MCA:DrawFullPage(root, data)
     local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
 
-    self:Text(child, title, "GameFontHighlightLarge", {"TOPLEFT", child, "TOPLEFT", 16, -12}, 300, self:UIColor("accent"))
+    -- Centred over the content rectangle rather than over the scroll child:
+    -- the child is 1140 wide but the content spans PAGE_X..PAGE_X+PAGE_W, so
+    -- centring on the child would sit the title 8px off the table below it.
+    -- The band is the 50px between the page top and where content starts.
+    self:Text(child, title, "GameFontHighlightLarge",
+        {"CENTER", child, "TOPLEFT", PAGE_X + PAGE_W / 2, -25}, PAGE_W,
+        self:UIColor("accent"), "CENTER")
 
     local y = -50
 
