@@ -81,18 +81,171 @@ function MCA:SetBackdropSolid(frame, bg, border)
     frame:SetBackdropBorderColor(e[1],e[2],e[3],e[4] or 1)
 end
 
+-- ---------------------------------------------------------------------------
+-- Widget recycling.
+--
+-- WoW never frees a frame. Hide() plus SetParent(nil) only orphans it, and the
+-- memory is held for the rest of the session — so rebuilding the whole window
+-- on every tab click, every report open and every render leaked a full
+-- window's worth of frames and fontstrings each time. A 25-player Player tab
+-- is ~25 row frames and ~175 fontstrings; a raid night's worth of clicks adds
+-- up to thousands of orphaned objects.
+--
+-- Widgets are now taken from a pool and handed back at the start of each
+-- rebuild. Fontstrings and textures belong to the frame that created them, so
+-- they ride along with their frame and are handed out again in order.
+-- ---------------------------------------------------------------------------
+-- Bumped on every recycle. Deferred work captures it and bails if a rebuild
+-- happened in the meantime, so a C_Timer callback cannot land on a frame that
+-- has since been handed to something else.
+local renderGeneration = 0
+local widgetPools = {}      -- "type|template" -> free frames
+local liveWidgets = {}      -- handed out since the last recycle
+local poolAttic            -- parent for parked frames; created on first use
+
+local function poolKeyFor(ftype, template)
+    return (ftype or "Frame") .. "|" .. (template or "")
+end
+
+-- Reset the per-frame cursors so its fontstrings and textures are handed out
+-- from the start again.
+local function resetWidgetCursors(f)
+    f._rpTextCursor = 0
+    f._rpTexCursor = 0
+end
+
+function MCA:AcquireFrame(ftype, parent, template)
+    local key = poolKeyFor(ftype, template)
+    local pool = widgetPools[key]
+    local f = pool and table.remove(pool)
+
+    if f then
+        f:SetParent(parent)
+        f:ClearAllPoints()
+        -- Scripts are set per use; a recycled row must not keep the previous
+        -- occupant's click handler.
+        for _, script in ipairs({"OnClick", "OnEnter", "OnLeave", "OnUpdate", "OnDragStart", "OnDragStop", "OnHide", "OnShow"}) do
+            if f:HasScript(script) then f:SetScript(script, nil) end
+        end
+        f:Show()
+    else
+        f = CreateFrame(ftype or "Frame", nil, parent, template)
+        f._rpPoolKey = key
+    end
+
+    resetWidgetCursors(f)
+    liveWidgets[#liveWidgets + 1] = f
+    return f
+end
+
+function MCA:AcquireText(frame, font)
+    frame._rpTexts = frame._rpTexts or {}
+    frame._rpTextCursor = (frame._rpTextCursor or 0) + 1
+
+    local fs = frame._rpTexts[frame._rpTextCursor]
+    if not fs then
+        fs = frame:CreateFontString(nil, "OVERLAY", font or "GameFontNormal")
+        frame._rpTexts[frame._rpTextCursor] = fs
+    end
+
+    fs:SetFontObject(font or "GameFontNormal")
+    fs:ClearAllPoints()
+    fs:Show()
+    return fs
+end
+
+function MCA:AcquireTexture(frame, layer)
+    frame._rpTextures = frame._rpTextures or {}
+    frame._rpTexCursor = (frame._rpTexCursor or 0) + 1
+
+    local t = frame._rpTextures[frame._rpTexCursor]
+    if not t then
+        t = frame:CreateTexture(nil, layer or "ARTWORK")
+        frame._rpTextures[frame._rpTexCursor] = t
+    end
+
+    t:ClearAllPoints()
+    t:SetTexCoord(0, 1, 0, 1)
+    t:SetVertexColor(1, 1, 1, 1)
+    t:Show()
+    return t
+end
+
+-- Hide any fontstring or texture the frame owns beyond what this pass used,
+-- so a recycled frame does not show the previous occupant's leftovers.
+local function hideUnusedChildren(f)
+    if f._rpTexts then
+        for i = (f._rpTextCursor or 0) + 1, #f._rpTexts do f._rpTexts[i]:Hide() end
+    end
+    if f._rpTextures then
+        for i = (f._rpTexCursor or 0) + 1, #f._rpTextures do f._rpTextures[i]:Hide() end
+    end
+end
+
+function MCA:TrimWidget(f)
+    hideUnusedChildren(f)
+end
+
+function MCA:RenderGeneration()
+    return renderGeneration
+end
+
+function MCA:RecycleWidgets()
+    renderGeneration = renderGeneration + 1
+    if not poolAttic then
+        poolAttic = CreateFrame("Frame", nil, UIParent)
+        poolAttic:Hide()
+    end
+
+    for i = #liveWidgets, 1, -1 do
+        local f = liveWidgets[i]
+        liveWidgets[i] = nil
+
+        hideUnusedChildren(f)
+        if f._rpTexts then
+            for j = 1, #f._rpTexts do f._rpTexts[j]:Hide() end
+        end
+        if f._rpTextures then
+            for j = 1, #f._rpTextures do f._rpTextures[j]:Hide() end
+        end
+
+        f:Hide()
+        f:ClearAllPoints()
+        f:SetParent(poolAttic)
+
+        local key = f._rpPoolKey or poolKeyFor("Frame", nil)
+        widgetPools[key] = widgetPools[key] or {}
+        table.insert(widgetPools[key], f)
+    end
+end
+
+-- Diagnostic for /rp pool.
+function MCA:ReportWidgetPool()
+    local free, kinds = 0, 0
+    for key, list in pairs(widgetPools) do
+        kinds = kinds + 1
+        free = free + #list
+        self:Print(string.format("  %-34s %d liberi", key, #list))
+    end
+    self:Print(string.format("Pool widget: %d tipi, %d frame riutilizzabili, %d in uso",
+        kinds, free, #liveWidgets))
+end
+
 function MCA:Text(parent, text, font, point, width, color, justify)
-    local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontNormal")
+    local fs = self:AcquireText(parent, font)
     fs:SetPoint(unpack(point))
-    if width then fs:SetWidth(width) end
+    -- Every property is set unconditionally: a recycled fontstring would
+    -- otherwise keep the previous width, colour or justification.
+    fs:SetWidth(width or 0)
     fs:SetJustifyH(justify or "LEFT")
     fs:SetText(text or "")
-    if color then fs:SetTextColor(color[1], color[2], color[3], color[4] or 1) end
+    local c = color or self:UIColor("white")
+    fs:SetTextColor(c[1], c[2], c[3], c[4] or 1)
     return fs
 end
 
 function MCA:Panel(parent, point, w, h, bg, border)
-    local f = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    local f = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     f:SetPoint(unpack(point))
     f:SetSize(w,h)
     self:SetBackdropSolid(f, bg or self:UIColor("panel"), border or self:UIColor("border"))
@@ -100,7 +253,7 @@ function MCA:Panel(parent, point, w, h, bg, border)
 end
 
 function MCA:Button(parent, text, point, w, h, fn, danger)
-    local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    local b = self:AcquireFrame("Button", parent, "BackdropTemplate")
     b:SetPoint(unpack(point))
     b:SetSize(w,h)
     local bg = danger and {0.18,0.03,0.03,0.88} or {0.06,0.055,0.025,0.88}
@@ -123,7 +276,7 @@ end
 -- the OnLeave closure, so an active state painted over it would be wiped the
 -- first time the mouse left; this keeps the selected colours in the closure.
 function MCA:FilterButton(parent, text, point, w, h, active, fn)
-    local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    local b = self:AcquireFrame("Button", parent, "BackdropTemplate")
     b:SetPoint(unpack(point))
     b:SetSize(w, h)
 
@@ -149,13 +302,16 @@ function MCA:Scroll(parent, point, w, h, bg, flush)
     local outer = self:Panel(parent, point, w, h,
         flush and TRANSPARENT or bg,
         flush and TRANSPARENT or nil)
-    local scroll = CreateFrame("ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
+    local scroll = self:AcquireFrame("ScrollFrame", outer, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 4, -4)
     scroll:SetPoint("BOTTOMRIGHT", -4, 4)
 
-    local child = CreateFrame("Frame", nil, scroll)
+    local child = self:AcquireFrame("Frame", scroll)
     child:SetSize(w - 10, h - 8)
     scroll:SetScrollChild(child)
+    -- A recycled scroll keeps the offset its previous table was left at, which
+    -- would open the next tab already scrolled down.
+    scroll:SetVerticalScroll(0)
 
     scroll.mdrOuterWidth = w
     scroll.mdrOuterHeight = h
@@ -193,8 +349,12 @@ function MCA:UpdateScrollBar(child, scroll, neededHeight)
     child:SetHeight(height)
 
     if scroll and scroll.ScrollBar then
+        local gen = self:RenderGeneration()
         C_Timer.After(0, function()
             if not scroll or not scroll.GetVerticalScrollRange then return end
+            -- The window was rebuilt before this ran; this scroll may now
+            -- belong to a different table.
+            if MCA:RenderGeneration() ~= gen then return end
             local needsScroll = scroll:GetVerticalScrollRange() and scroll:GetVerticalScrollRange() > 1
             if needsScroll then
                 scroll.ScrollBar:Show()
@@ -217,7 +377,7 @@ function MCA:GetInnerWidth(parent, fallback)
 end
 
 function MCA:ClassIcon(parent, class, x, y, size)
-    local icon = parent:CreateTexture(nil, "ARTWORK")
+    local icon = self:AcquireTexture(parent, "ARTWORK")
     icon:SetPoint("TOPLEFT", x, y)
     icon:SetSize(size, size)
     icon:SetTexture("Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES")
@@ -241,16 +401,16 @@ function MCA:ClassIcon(parent, class, x, y, size)
 end
 
 function MCA:SpellIcon(parent, spellID, x, y, size, label)
-    local f = CreateFrame("Frame", nil, parent)
+    local f = self:AcquireFrame("Frame", parent)
     f:SetPoint("TOPLEFT", x, y)
     f:SetSize(size, size + (label and 12 or 0))
     f:EnableMouse(true)
-    local icon = f:CreateTexture(nil, "ARTWORK")
+    local icon = self:AcquireTexture(f, "ARTWORK")
     icon:SetSize(size,size)
     icon:SetPoint("TOPLEFT",0,0)
     icon:SetTexture(self:GetSpellIconSafe(spellID))
     if label then
-        local fs = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        local fs = self:AcquireText(f, "GameFontNormalSmall")
         fs:SetPoint("TOP", icon, "BOTTOM", 0, -1)
         fs:SetWidth(size+24)
         fs:SetJustifyH("CENTER")
@@ -332,17 +492,12 @@ function MCA:CountCDsInWindow(data, startTime, endTime)
 end
 
 function MCA:MainFrame()
-    -- Clicking a sidebar tab rebuilds the whole frame, so a window the player
-    -- had dragged somewhere jumped back to the middle of the screen every
-    -- time. Carry the position across the rebuild, and remember it in the DB
-    -- so it also survives a reload.
-    local old = _G.MCAFrame
-    if old then
-        local point, _, relPoint, x, yOff = old:GetPoint()
-        if point then
-            RaidPulseDB.framePos = {point = point, relPoint = relPoint, x = x, y = yOff}
-        end
-        old:Hide(); old:SetParent(nil); _G.MCAFrame = nil
+    -- Built once and kept. It used to be destroyed and rebuilt on every tab
+    -- click, which both leaked the old frame and threw away the position the
+    -- player had dragged it to.
+    if _G.MCAFrame then
+        _G.MCAFrame:Show()
+        return _G.MCAFrame
     end
 
     local f = CreateFrame("Frame", "MCAFrame", UIParent, "BackdropTemplate")
@@ -392,7 +547,7 @@ end
 
 
 function MCA:SmallTexture(parent, texture, point, size, vertexColor)
-    local t = parent:CreateTexture(nil, "ARTWORK")
+    local t = self:AcquireTexture(parent, "ARTWORK")
     t:SetPoint(unpack(point))
     t:SetSize(size or 16, size or 16)
     t:SetTexture(texture)
@@ -431,7 +586,7 @@ function MCA:DrawSidebar(root)
     local side = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", SIDE_X, SIDE_Y}, SIDE_W, SIDE_H, {0.012,0.017,0.022,0.96})
 
     -- Emblem placeholder
-    local emblem = side:CreateTexture(nil, "ARTWORK")
+    local emblem = self:AcquireTexture(side, "ARTWORK")
     emblem:SetPoint("TOPLEFT", 17, -17)
     emblem:SetSize(48,48)
     emblem:SetTexture("Interface\\AddOns\\RaidPulse\\Textures\\icon")
@@ -451,7 +606,7 @@ function MCA:DrawSidebar(root)
     local y = -92
     for _, tab in ipairs(tabs) do
         local active = self.activeTab == tab[2] or (tab[2] == "players" and self.activeTab == "playerDetail")
-        local b = CreateFrame("Button", nil, side, "BackdropTemplate")
+        local b = self:AcquireFrame("Button", side, "BackdropTemplate")
         b:SetPoint("TOPLEFT", 8, y)
         b:SetSize(122, 34)
         self:SetBackdropSolid(b, active and {0.18,0.15,0.02,0.82} or {0.035,0.038,0.04,0.75}, active and {1,0.82,0,1} or {0.16,0.17,0.18,1})
@@ -586,7 +741,7 @@ function MCA:DrawTopDashboard(root, data)
     local cellWidth = math.floor(kpiW / #cells)
     local x = 0
     for _, c in ipairs(cells) do
-        local cell = CreateFrame("Frame", nil, kpis, "BackdropTemplate")
+        local cell = self:AcquireFrame("Frame", kpis, "BackdropTemplate")
         cell:SetPoint("TOPLEFT", x, 0)
         cell:SetSize(cellWidth, 64)
         self:SetBackdropSolid(cell, {0,0,0,0}, {0.17,0.18,0.19,1})
@@ -596,7 +751,7 @@ function MCA:DrawTopDashboard(root, data)
     end
 
     local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + CONTENT_W - modeW, DASH_Y}, modeW, DASH_H, {0.018,0.021,0.024,0.72})
-    local icon = mode:CreateTexture(nil, "ARTWORK")
+    local icon = self:AcquireTexture(mode, "ARTWORK")
     icon:SetPoint("LEFT", 20, 0)
     icon:SetSize(36,36)
     icon:SetTexture("Interface\\Icons\\Achievement_Dungeon_GloryoftheRaider")
@@ -661,7 +816,7 @@ function MCA:ComputeRaidScore(data)
 end
 
 function MCA:TableHeader(parent, cols, y)
-    local row = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    local row = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     row:SetPoint("TOPLEFT", 0, y)
     row:SetSize(parent:GetWidth(), 26)
     self:SetBackdropSolid(row, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
@@ -842,7 +997,7 @@ function MCA:DrawBossDetail(parent, data)
     y = self:TableHeader(child, cols, y)
 
     for i, p in ipairs(self:BuildPlayerList(data)) do
-        local row = CreateFrame("Button", nil, child, "BackdropTemplate")
+        local row = self:AcquireFrame("Button", child, "BackdropTemplate")
         row:SetPoint("TOPLEFT", 0, y)
         row:SetSize(442, 24)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
@@ -912,7 +1067,7 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
     end
 
     for i, rowData in ipairs(rows) do
-        local row = CreateFrame(rowData.onClick and "Button" or "Frame", nil, child, "BackdropTemplate")
+        local row = self:AcquireFrame(rowData.onClick and "Button" or "Frame", child, "BackdropTemplate")
         row:SetPoint("TOPLEFT", 0, y)
         row:SetSize(innerW, 28)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
@@ -1062,7 +1217,7 @@ function MCA:DrawRaidBuffMatrix(parent, data)
 
     child:SetWidth(math.max(tableW, parent:GetWidth()-32))
 
-    local header = CreateFrame("Frame", nil, child, "BackdropTemplate")
+    local header = self:AcquireFrame("Frame", child, "BackdropTemplate")
     header:SetPoint("TOPLEFT", 0, -2)
     header:SetSize(child:GetWidth(), 30)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
@@ -1081,7 +1236,7 @@ function MCA:DrawRaidBuffMatrix(parent, data)
     local players = matrix.players or {}
 
     for i, p in ipairs(players) do
-        local row = CreateFrame("Frame", nil, child, "BackdropTemplate")
+        local row = self:AcquireFrame("Frame", child, "BackdropTemplate")
         row:SetPoint("TOPLEFT", 0, y)
         row:SetSize(child:GetWidth(), 30)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
@@ -1178,7 +1333,7 @@ function MCA:DrawHistoryPage(parent)
         MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end, true)
 
-    local header = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    local header = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     header:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, -92)
     header:SetSize(PAGE_W, 28)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
@@ -1207,7 +1362,7 @@ function MCA:DrawHistoryPage(parent)
         if visible then
         rowIndex = rowIndex + 1
 
-        local row = CreateFrame("Button", nil, parent, "BackdropTemplate")
+        local row = self:AcquireFrame("Button", parent, "BackdropTemplate")
         row:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
         row:SetSize(PAGE_W, 30)
         self:SetBackdropSolid(row, rowIndex % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
@@ -1261,7 +1416,7 @@ end
 -- pitch) so the tabs are indistinguishable apart from their columns. Returns
 -- the y below the last row, so the caller keeps growing the page scroll.
 function MCA:DrawPageTable(parent, headers, rows, y)
-    local header = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    local header = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     header:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
     header:SetSize(PAGE_W, 28)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
@@ -1282,7 +1437,7 @@ function MCA:DrawPageTable(parent, headers, rows, y)
     for i, rowData in ipairs(rows) do
         -- A row is a plain frame unless it carries an onClick, in which case it
         -- has to be a Button to receive one.
-        local row = CreateFrame(rowData.onClick and "Button" or "Frame", nil, parent, "BackdropTemplate")
+        local row = self:AcquireFrame(rowData.onClick and "Button" or "Frame", parent, "BackdropTemplate")
         row:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
         row:SetSize(PAGE_W, 30)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
@@ -1531,7 +1686,7 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
     end
 
     for i, p in ipairs(list) do
-        local row = CreateFrame("Button", nil, child, "BackdropTemplate")
+        local row = self:AcquireFrame("Button", child, "BackdropTemplate")
         row:SetPoint("TOPLEFT", 0, y)
         row:SetSize(tableW, 28)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
@@ -1643,9 +1798,13 @@ function MCA:BuildDashboard(data)
 
     if not data.isEmpty then self.lastReport = data end
 
-    local old = _G.MCAFrame
-    if old then old:Hide(); old:SetParent(nil); _G.MCAFrame = nil end
+    -- Hand every widget from the previous render back to the pool before
+    -- drawing this one. Without this the window is rebuilt from scratch and
+    -- the old one is simply abandoned in memory.
+    self:RecycleWidgets()
 
+    -- The main frame is deliberately not recycled: it is created once and its
+    -- only fontstring is the static title, so its cursors must NOT be rewound.
     local root = self:MainFrame()
     self:DrawSidebar(root)
     self:DrawTopDashboard(root, data)
@@ -1725,7 +1884,7 @@ function MCA:BuildInterruptPage(parent, report)
 
     local list = self:GetSortedInterruptPlayers(report)
 
-    local box = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    local box = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     box:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, -46)
     box:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -14, 14)
 
@@ -1751,7 +1910,7 @@ function MCA:BuildInterruptPage(parent, report)
         {label="Interrupt", x=590, w=100, justify="CENTER"},
     }
 
-    local header = CreateFrame("Frame", nil, box)
+    local header = self:AcquireFrame("Frame", box)
     header:SetPoint("TOPLEFT", box, "TOPLEFT", 8, -10)
     header:SetPoint("TOPRIGHT", box, "TOPRIGHT", -8, -10)
     header:SetHeight(28)
@@ -1767,7 +1926,7 @@ function MCA:BuildInterruptPage(parent, report)
 
     local y = -42
     for i, p in ipairs(list) do
-        local row = CreateFrame("Frame", nil, box)
+        local row = self:AcquireFrame("Frame", box)
         row:SetPoint("TOPLEFT", box, "TOPLEFT", 8, y)
         row:SetPoint("TOPRIGHT", box, "TOPRIGHT", -8, y)
         row:SetHeight(28)
