@@ -497,26 +497,48 @@ function MCA:ReportWatcherState()
     -- Every failure so far has been a comparison, so if formatting is permitted
     -- the value can be laundered into an ordinary number and the whole feature
     -- works. This settles that in one line instead of another raid night.
-    if UnitExists("boss1") then
-        local raw = UnitHealth("boss1")
+    -- Probe whichever boss unit actually exists. Keying this to "boss1"
+    -- specifically meant the probe silently never ran on an encounter whose
+    -- units start at boss2.
+    local probeUnit = nil
+    for i = 1, MAX_BOSS_UNITS do
+        if UnitExists("boss" .. i) then
+            probeUnit = "boss" .. i
+            break
+        end
+    end
+
+    if not probeUnit then
+        self:Print("    nessuna unita' boss su cui sondare le operazioni")
+    else
+        local raw = UnitHealth(probeUnit)
+        local rawMax = UnitHealthMax(probeUnit)
         local probes = {
-            { "lettura", function() return raw ~= nil end },
-            { "tostring", function() return tostring(raw) end },
-            { "format", function() return string.format("%.1f", raw) end },
-            { "somma", function() return raw + 0 end },
-            { "confronto", function() return raw > 0 end },
+            { "tostring",   function() return tostring(raw) end },
+            { "format",     function() return string.format("%.1f", raw) end },
+            { "concat",     function() return "" .. raw end },
+            { "somma",      function() return raw + 0 end },
+            { "divisione",  function() return raw / rawMax end },
             { "math.floor", function() return math.floor(raw) end },
+            { "confronto",  function() return raw > 0 end },
         }
         local results = {}
         for _, probe in ipairs(probes) do
             local ok, res = pcall(probe[2])
-            results[#results + 1] = probe[1] .. "=" .. (ok and "OK" or "NO")
-            if ok and probe[1] == "format" then
-                results[#results] = results[#results] .. "(" .. tostring(res) .. ")"
+            local entry = probe[1] .. "=" .. (ok and "OK" or "NO")
+            if ok and (probe[1] == "format" or probe[1] == "tostring"
+                       or probe[1] == "concat") then
+                entry = entry .. "[" .. tostring(res) .. "]"
             end
+            results[#results + 1] = entry
         end
-        self:Print("    operazioni permesse su valore protetto: "
-            .. table.concat(results, " "))
+        self:Print("    " .. probeUnit .. " operazioni: " .. table.concat(results, " "))
+
+        -- And the thing that actually matters: does laundering produce a
+        -- usable plain number?
+        local washed = launder(raw)
+        self:Print("    launder(" .. probeUnit .. ") -> " .. tostring(washed)
+            .. " (usabile=" .. tostring(washed ~= nil and isUsableNumber(washed)) .. ")")
     end
 
     -- Per-frame detail. A bar that is shown but not visible has been orphaned
