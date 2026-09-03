@@ -748,64 +748,56 @@ end
 
 
 function MCA:DrawBossBreakdown(parent, data)
-    -- Content starts at -42, so the band centre is -21. The width also stops
-    -- being a fixed 160, which would have offset the centring on any panel
-    -- that is not exactly that wide.
-    self:Text(parent, "Boss Breakdown", "GameFontHighlightLarge",
-        {"CENTER", parent, "TOP", 0, -21}, parent:GetWidth()-28, self:UIColor("accent"), "CENTER")
-
+    -- Built as rows for DrawSmallPanel, the same as the Deaths and Timeline
+    -- cards beside it. It used to draw its own header and rows straight onto
+    -- the panel, which is why it alone spanned the full card width, used 30px
+    -- rows against the others' 28, and started 8px higher.
     local bosses = self:GetWindows(data)
-    local y = -42
 
-    -- MCA 4.0.30: Boss Breakdown adaptive columns.
-    -- The panel is narrower than the old fixed 480px layout, so every column
-    -- is calculated from parent width and kept inside the frame.
-    local tableW = math.max((parent:GetWidth() or 380) - 16, 320)
+    -- Must match what DrawSmallPanel will accept: it drops any column ending
+    -- past innerW - 4, and innerW is the panel width less 16 for the scroll
+    -- and 10 for its child. Sizing to the panel width alone silently lost the
+    -- last column.
+    local tableW = math.max((parent:GetWidth() or 380) - 30, 296)
     local wNum, wPull, wKill, wDurata, wMorti = 24, 38, 38, 52, 42
     local gap = 6
 
-    local xNum = 8
-    local xBoss = 40
+    local xNum, xBoss = 8, 40
     local xMorti = tableW - wMorti
     local xDurata = xMorti - gap - wDurata
     local xKill = xDurata - gap - wKill
     local xPull = xKill - gap - wPull
     local wBoss = math.max(xPull - xBoss - gap, 100)
 
-    local cols = {
-        {label="#", x=xNum, w=wNum, justify="CENTER"},
-        {label="Boss", x=xBoss, w=wBoss},
-        {label="Pull", x=xPull, w=wPull, justify="CENTER"},
-        {label="Kill", x=xKill, w=wKill, justify="CENTER"},
+    local headers = {
+        {label="#",      x=xNum,    w=wNum,    justify="CENTER"},
+        {label="Boss",   x=xBoss,   w=wBoss},
+        {label="Pull",   x=xPull,   w=wPull,   justify="CENTER"},
+        {label="Kill",   x=xKill,   w=wKill,   justify="CENTER"},
         {label="Durata", x=xDurata, w=wDurata, justify="CENTER"},
-        {label="Morti", x=xMorti, w=wMorti, justify="CENTER"}
+        {label="Morti",  x=xMorti,  w=wMorti,  justify="CENTER"},
     }
 
-    y = self:TableHeader(parent, cols, y)
-
+    local rows = {}
     for i, b in ipairs(bosses) do
-        local row = CreateFrame("Button", nil, parent, "BackdropTemplate")
-        row:SetPoint("TOPLEFT", 8, y)
-        row:SetSize(parent:GetWidth()-16, 30)
-        self:SetBackdropSolid(row, i == 1 and {0.10,0.16,0.25,0.75} or (i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row")), {0.12,0.13,0.14,1})
-
         local deaths = self:CountDeathsInWindow(data, b.startTime or 0, b.endTime or data.duration or 0)
-
-        self:Text(row, tostring(i), "GameFontNormal", {"LEFT", row, "LEFT", xNum, 0}, wNum, self:UIColor("white"), "CENTER")
-        self:Text(row, b.name or "Boss", "GameFontNormal", {"LEFT", row, "LEFT", xBoss, 0}, wBoss, self:UIColor("accent"))
-        self:Text(row, "1", "GameFontNormal", {"LEFT", row, "LEFT", xPull, 0}, wPull, self:UIColor("white"), "CENTER")
-        self:SuccessTexture(row, {"LEFT", row, "LEFT", xKill + 12, 0}, b.success)
-        self:Text(row, self:FormatTime(b.duration or ((b.endTime or 0)-(b.startTime or 0))), "GameFontNormal", {"LEFT", row, "LEFT", xDurata, 0}, wDurata, self:UIColor("white"), "CENTER")
-        self:Text(row, tostring(deaths), "GameFontNormal", {"LEFT", row, "LEFT", xMorti, 0}, wMorti, deaths > 0 and self:UIColor("red") or self:UIColor("white"), "CENTER")
-
-        row:SetScript("OnClick", function()
-            MCA.selectedBoss = b
-            MCA:BuildDashboard(data)
-        end)
-
-        y = y - 30
-        if i >= 4 then break end
+        rows[#rows + 1] = {
+            {x=xNum,    w=wNum,    text=tostring(i), justify="CENTER"},
+            {x=xBoss,   w=wBoss,   text=b.name or "Boss", color=self:UIColor("accent")},
+            {x=xPull,   w=wPull,   text="1", justify="CENTER"},
+            {x=xKill,   w=wKill,   success=b.success and true or false},
+            {x=xDurata, w=wDurata, justify="CENTER",
+             text=self:FormatTime(b.duration or ((b.endTime or 0) - (b.startTime or 0)))},
+            {x=xMorti,  w=wMorti,  text=tostring(deaths), justify="CENTER",
+             color=deaths > 0 and self:UIColor("red") or self:UIColor("white")},
+            onClick = function()
+                MCA.selectedBoss = b
+                MCA:BuildDashboard(data)
+            end,
+        }
     end
+
+    self:DrawSmallPanel(parent, "Boss Breakdown", nil, "accent", headers, rows)
 end
 
 function MCA:DrawBossDetail(parent, data)
@@ -898,19 +890,24 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
     end
 
     for i, rowData in ipairs(rows) do
-        local row = CreateFrame("Frame", nil, child, "BackdropTemplate")
+        local row = CreateFrame(rowData.onClick and "Button" or "Frame", nil, child, "BackdropTemplate")
         row:SetPoint("TOPLEFT", 0, y)
         row:SetSize(innerW, 28)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+        if rowData.onClick then row:SetScript("OnClick", rowData.onClick) end
 
         for _, cell in ipairs(rowData) do
             local x = cell.x or 0
             local w = cell.w or 40
             if x + w <= innerW - 4 then
-                if cell.spellID then self:SpellIcon(row, cell.spellID, x, -5, 18) end
-                local textX = x + (cell.spellID and 25 or 0)
-                local textW = w - (cell.spellID and 25 or 0)
-                self:Text(row, cell.text or "", "GameFontNormalSmall", {"LEFT", row, "LEFT", textX, 0}, textW, cell.color or self:UIColor("white"), cell.justify or "LEFT")
+                if cell.success ~= nil then
+                    self:SuccessTexture(row, {"LEFT", row, "LEFT", x + math.floor(w / 2) - 6, 0}, cell.success)
+                else
+                    if cell.spellID then self:SpellIcon(row, cell.spellID, x, -5, 18) end
+                    local textX = x + (cell.spellID and 25 or 0)
+                    local textW = w - (cell.spellID and 25 or 0)
+                    self:Text(row, cell.text or "", "GameFontNormalSmall", {"LEFT", row, "LEFT", textX, 0}, textW, cell.color or self:UIColor("white"), cell.justify or "LEFT")
+                end
             end
         end
 
