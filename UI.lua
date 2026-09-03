@@ -599,6 +599,7 @@ function MCA:DrawSidebar(root)
         {"Player","players"},
         {"Deaths","deaths"},
         {"Timeline","timeline"},
+        {"Confronto","compare"},
         {"Storico","history"},
         {"Impostazioni","settings"}
     }
@@ -618,6 +619,7 @@ function MCA:DrawSidebar(root)
             buffs = "Interface\\Icons\\Spell_Holy_GreaterBlessingofKings",
             interrupts = "Interface\\Icons\\Ability_Kick",
             timeline = "Interface\\Icons\\INV_Misc_PocketWatch_01",
+            compare = "Interface\\Icons\\INV_Misc_Spyglass_02",
             history = "Interface\\Icons\\INV_Misc_Book_09",
             settings = "Interface\\Icons\\INV_Misc_Gear_01"
         }
@@ -1464,10 +1466,125 @@ function MCA:DrawPageTable(parent, headers, rows, y)
     return y
 end
 
+-- ---------------------------------------------------------------------------
+-- Attempt comparison.
+--
+-- After a run of wipes on one boss the useful question is not what a single
+-- pull looked like, but who moved between them: who improved, who fell off,
+-- who dies in the same place every time. The history already holds every
+-- attempt in full; this only lines them up side by side.
+-- ---------------------------------------------------------------------------
+local COMPARE_ATTEMPTS = 6      -- as many columns as the page width fits
+
+-- savedAt is "dd/mm/yyyy HH:MM" and the columns only have room for the clock,
+-- which is what tells attempts apart within one night anyway.
+local function attemptLabel(report)
+    local t = tostring(report and report.savedAt or "")
+    return t:match("(%d%d:%d%d)%s*$") or t
+end
+
+-- The most recent attempts on the same boss, newest first.
+function MCA:GetComparisonAttempts(data)
+    local boss = data and data.boss
+    if not boss or boss == "" then return {} end
+
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    local out = {}
+    for i = #history, 1, -1 do
+        local r = history[i]
+        if r and r.boss == boss then
+            out[#out + 1] = r
+            if #out >= COMPARE_ATTEMPTS then break end
+        end
+    end
+    return out
+end
+
+function MCA:DrawComparePage(parent, data, y)
+    local attempts = self:GetComparisonAttempts(data)
+
+    if #attempts < 2 then
+        self:Text(parent, "Serve piu' di un tentativo sullo stesso boss per un confronto.",
+            "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6},
+            700, self:UIColor("gray"))
+        return y - 40
+    end
+
+    local nameCol = {x = 10, w = 210}
+    local colW, firstX = 140, 230
+
+    local headers = {{label = "Player", x = nameCol.x, w = nameCol.w}}
+    for i, r in ipairs(attempts) do
+        headers[#headers + 1] = {
+            label = attemptLabel(r) .. (r.result and "" or " ✖"),
+            x = firstX + (i - 1) * colW, w = colW - 10, justify = "CENTER",
+        }
+    end
+
+    -- One row per player seen in any attempt, ordered by how they did in the
+    -- most recent one so the table reads top-down like the summary does.
+    local seen, names = {}, {}
+    for _, r in ipairs(attempts) do
+        for _, p in pairs(r.players or {}) do
+            if p.name and not seen[p.name] then
+                seen[p.name] = true
+                names[#names + 1] = p.name
+            end
+        end
+    end
+
+    local latest = attempts[1].players or {}
+    table.sort(names, function(a, b)
+        local pa, pb = latest[a], latest[b]
+        return (pa and self:GetPlayerDPS(pa) or 0) > (pb and self:GetPlayerDPS(pb) or 0)
+    end)
+
+    local rows = {}
+    for _, name in ipairs(names) do
+        local row = {{x = nameCol.x, w = nameCol.w, text = name, font = "GameFontNormal"}}
+
+        for i, r in ipairs(attempts) do
+            local p = (r.players or {})[name]
+            local dps = p and self:GetPlayerDPS(p) or 0
+
+            local text, color = "-", self:UIColor("gray")
+            if p and dps > 0 then
+                -- attempts run newest-first, so the next index is the older one
+                local prev = attempts[i + 1] and (attempts[i + 1].players or {})[name]
+                local prevDps = prev and self:GetPlayerDPS(prev) or 0
+
+                color = self:UIColor("white")
+                if prevDps > 0 then
+                    -- 5% either way, so ordinary variance is not painted as a trend
+                    if dps > prevDps * 1.05 then color = self:UIColor("green")
+                    elseif dps < prevDps * 0.95 then color = self:UIColor("red") end
+                end
+
+                text = self:FormatMetricValue(dps)
+                if (p.deaths or 0) > 0 then text = text .. " +" .. p.deaths end
+            elseif not p then
+                text = "assente"
+            end
+
+            row[#row + 1] = {x = firstX + (i - 1) * colW, w = colW - 10,
+                             text = text, color = color, justify = "CENTER"}
+        end
+
+        rows[#rows + 1] = row
+    end
+
+    y = self:DrawPageTable(parent, headers, rows, y)
+    self:Text(parent, "Verde/rosso = variazione oltre il 5% rispetto al tentativo precedente. "
+        .. "\"+N\" = morti in quel tentativo. \"✖\" nell'intestazione = wipe.",
+        "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10},
+        900, self:UIColor("gray"))
+    return y - 40
+end
+
 function MCA:DrawFullPage(root, data)
     local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, BODY_Y}, CONTENT_W, BODY_H, {0.018,0.020,0.022,0.65})
 
-    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", settings="Impostazioni"}
+    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", compare="Confronto", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
 
     -- Centred over the content rectangle rather than over the scroll child:
@@ -1544,6 +1661,9 @@ function MCA:DrawFullPage(root, data)
             {label="Evento", x=tlCols.event.x,  w=tlCols.event.w},
             {label="Player", x=tlCols.player.x, w=tlCols.player.w},
         }, self:BuildTimelineRows(data, tlCols), y)
+
+    elseif self.activeTab == "compare" then
+        y = self:DrawComparePage(child, data, y)
 
     elseif self.activeTab == "history" then
         y = -50 - self:DrawHistoryPage(child)
