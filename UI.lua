@@ -189,6 +189,24 @@ function MCA:TrimWidget(f)
     hideUnusedChildren(f)
 end
 
+-- Rewind a frame that is NOT pooled, so it can be drawn on again from scratch.
+-- Resetting the cursors alone is not enough: nothing would hide what the
+-- previous render left on it, which is how the settings list stayed on screen
+-- underneath every tab opened after it.
+function MCA:RewindWidget(f)
+    if not f then return end
+
+    if f._rpTexts then
+        for i = 1, #f._rpTexts do f._rpTexts[i]:Hide() end
+    end
+    if f._rpTextures then
+        for i = 1, #f._rpTextures do f._rpTextures[i]:Hide() end
+    end
+
+    f._rpTextCursor = 0
+    f._rpTexCursor = 0
+end
+
 function MCA:RenderGeneration()
     return renderGeneration
 end
@@ -334,9 +352,8 @@ function MCA:Scroll(parent, point, w, h, bg, flush)
     end
     child:SetSize(w - 10, h - 8)
     child:Show()
-    -- Kept out of the pool, so its own fontstring cursors are rewound here.
-    child._rpTextCursor = 0
-    child._rpTexCursor = 0
+    -- Kept out of the pool, so it is rewound here instead.
+    self:RewindWidget(child)
 
     -- A reused scroll keeps the offset its previous table was left at, which
     -- would open the next tab already scrolled down.
