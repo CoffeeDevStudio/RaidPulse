@@ -195,8 +195,15 @@ local MAX_BOSS_UNITS = 8
 -- through and type() still says "number". So every read is attempted inside a
 -- pcall, and nothing is trusted until it survives one.
 local bossHealthUnavailable = false
+local bossReadFailures = 0
+-- 0.5s ticks, so this is ~2 minutes of a live encounter producing nothing
+-- before the sampler stops trying. Long enough that a pull which simply has no
+-- boss frames yet is not written off.
+local BOSS_READ_GIVE_UP = 240
 
-local function readBossHealthPercent()
+-- Reader 1: the unit API. Direct and exact, but this is the one that hands
+-- back protected values on 12.0.7.
+local function readBossHealthFromUnits()
     local cur, maxHP = 0, 0
     for i = 1, MAX_BOSS_UNITS do
         local unit = "boss" .. i
@@ -214,6 +221,36 @@ local function readBossHealthPercent()
     return (cur / maxHP) * 100
 end
 
+-- Reader 2: Blizzard's own boss frames. The status bars are filled in by
+-- untainted Blizzard code, and reading a widget's value is a frame call rather
+-- than a unit query — so it can survive where the unit API is protected.
+-- Only useful while the default boss frames exist; a unit-frame replacement
+-- may hide or never create them, in which case this finds nothing and the
+-- caller falls through.
+local function readBossHealthFromFrames()
+    local cur, maxHP = 0, 0
+    for i = 1, MAX_BOSS_UNITS do
+        local frame = _G["Boss" .. i .. "TargetFrame"]
+        local bar = frame and (frame.healthbar or frame.HealthBar)
+        if bar and bar.GetValue and bar:IsShown() then
+            local v = bar:GetValue()
+            local lo, hi = bar:GetMinMaxValues()
+            if v and lo and hi and hi > lo then
+                cur = cur + (v - lo)
+                maxHP = maxHP + (hi - lo)
+            end
+        end
+    end
+
+    if maxHP <= 0 then return nil end
+    return (cur / maxHP) * 100
+end
+
+local BOSS_HEALTH_READERS = {
+    { name = "unit",  fn = readBossHealthFromUnits },
+    { name = "frame", fn = readBossHealthFromFrames },
+}
+
 -- A secret value survives being returned from the pcall above, so it has to be
 -- rejected before it can reach the session — from there it would be written
 -- into SavedVariables and blow up again in the UI on the next login.
@@ -222,25 +259,38 @@ local function isUsableNumber(v)
     return (pcall(function() return v >= 0 and v <= 100 end))
 end
 
+-- Try each reader and return the first usable percentage, along with the name
+-- of the reader that produced it. Returns nil when no reader could produce a
+-- number — which is the normal case outside a boss engagement.
+function MCA:ReadBossHealth()
+    for _, reader in ipairs(BOSS_HEALTH_READERS) do
+        local ok, pct = pcall(reader.fn)
+        if ok and pct ~= nil and isUsableNumber(pct) then
+            return pct, reader.name
+        end
+    end
+    return nil, nil
+end
+
 function MCA:SampleBossHealth()
     if not self.session or bossHealthUnavailable then return end
 
-    local ok, pct = pcall(readBossHealthPercent)
-    if not ok then
-        -- Latch off instead of raising on every tick: unguarded, this threw
-        -- 112 times in a single pull.
-        bossHealthUnavailable = true
-        self:Debug("Boss health is protected on this client; Boss HP disabled.")
+    local pct = self:ReadBossHealth()
+    if pct == nil then
+        -- No reader worked. That is expected between pulls (no boss frames),
+        -- so only give up after a run of failures while an encounter is
+        -- supposedly live, rather than throwing away the whole fight on the
+        -- first empty sample.
+        bossReadFailures = bossReadFailures + 1
+        if bossReadFailures >= BOSS_READ_GIVE_UP then
+            bossHealthUnavailable = true
+            self:Debug("Boss health unreadable after "
+                .. BOSS_READ_GIVE_UP .. " attempts; Boss HP disabled for this pull.")
+        end
         return
     end
 
-    if pct == nil then return end
-    if not isUsableNumber(pct) then
-        bossHealthUnavailable = true
-        self:Debug("Boss health returned a protected value; Boss HP disabled.")
-        return
-    end
-
+    bossReadFailures = 0
     local low = self.session.bossHPLow
     if not low or pct < low then
         self.session.bossHPLow = pct
@@ -303,6 +353,7 @@ function MCA:StartSessionWatcher()
     -- Retry health reads once per pull: the latch should not survive a fight,
     -- in case the first failure was situational rather than a client-wide rule.
     bossHealthUnavailable = false
+    bossReadFailures = 0
     if not C_Timer or not C_Timer.NewTicker then return end
     sessionTicker = C_Timer.NewTicker(POLL_INTERVAL, pollSession)
 end
@@ -335,6 +386,34 @@ function MCA:ReportWatcherState()
     for _ in pairs(players) do rosterCount = rosterCount + 1 end
     self:Print(string.format("  Gruppo: %d membri, IsInRaid=%s | roster sessione: %d",
         GetNumGroupMembers() or 0, tostring(IsInRaid() and true or false), rosterCount))
+
+    -- Boss health: report each reader separately, because "-" in the report
+    -- has three different causes (no boss frames, protected values, sampler
+    -- latched off) that need three different answers.
+    local bossUnits = 0
+    for i = 1, MAX_BOSS_UNITS do
+        if UnitExists("boss" .. i) then bossUnits = bossUnits + 1 end
+    end
+    self:Print(string.format("  Boss HP: unita' boss presenti=%d | sampler=%s | minimo finora=%s",
+        bossUnits,
+        bossHealthUnavailable and "DISATTIVATO" or "attivo",
+        self.session.bossHPLow and string.format("%.1f%%", self.session.bossHPLow) or "nessuno"))
+
+    for _, reader in ipairs(BOSS_HEALTH_READERS) do
+        local ok, pct = pcall(reader.fn)
+        if not ok then
+            self:Print(string.format("    lettura '%s': ERRORE (%s)",
+                reader.name, tostring(pct)))
+        elseif pct == nil then
+            self:Print(string.format("    lettura '%s': nessun dato "
+                .. "(nessun boss ingaggiato, o frame assenti)", reader.name))
+        elseif not isUsableNumber(pct) then
+            self:Print(string.format("    lettura '%s': valore protetto, inutilizzabile",
+                reader.name))
+        else
+            self:Print(string.format("    lettura '%s': %.1f%% OK", reader.name, pct))
+        end
+    end
 
     visitGroupUnits(function(unit)
         if not UnitExists(unit) then return end
