@@ -91,11 +91,11 @@ function MCA:Text(parent, text, font, point, width, color, justify)
     return fs
 end
 
-function MCA:Panel(parent, point, w, h, bg)
+function MCA:Panel(parent, point, w, h, bg, border)
     local f = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     f:SetPoint(unpack(point))
     f:SetSize(w,h)
-    self:SetBackdropSolid(f, bg or self:UIColor("panel"), self:UIColor("border"))
+    self:SetBackdropSolid(f, bg or self:UIColor("panel"), border or self:UIColor("border"))
     return f
 end
 
@@ -140,8 +140,15 @@ function MCA:FilterButton(parent, text, point, w, h, active, fn)
 end
 
 
-function MCA:Scroll(parent, point, w, h, bg)
-    local outer = self:Panel(parent, point, w, h, bg)
+-- `flush` drops the container's own background and border, so the table reads
+-- as part of the panel it sits in instead of as a second boxed-in table. The
+-- scrolling itself is unaffected; only the chrome goes.
+local TRANSPARENT = {0, 0, 0, 0}
+
+function MCA:Scroll(parent, point, w, h, bg, flush)
+    local outer = self:Panel(parent, point, w, h,
+        flush and TRANSPARENT or bg,
+        flush and TRANSPARENT or nil)
     local scroll = CreateFrame("ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 4, -4)
     scroll:SetPoint("BOTTOMRIGHT", -4, 4)
@@ -806,7 +813,7 @@ function MCA:DrawBossDetail(parent, data)
     self:Text(parent, "Dettaglio: "..(boss and boss.name or "Encounter"), "GameFontHighlightLarge",
         {"CENTER", parent, "TOP", 0, -19}, parent:GetWidth()-28, self:UIColor("accent"), "CENTER")
 
-    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -38}, parent:GetWidth()-16, parent:GetHeight()-44, {0.018,0.020,0.022,0.55})
+    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -38}, parent:GetWidth()-16, parent:GetHeight()-44, {0.018,0.020,0.022,0.55}, true)
 
     local cols = {
         {label="Player", x=10, w=122},
@@ -879,7 +886,7 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
 
     local scrollW = parent:GetWidth() - 16
     local scrollH = parent:GetHeight() - 62
-    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -50}, scrollW, scrollH, {0.018,0.020,0.022,0.55})
+    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -50}, scrollW, scrollH, {0.018,0.020,0.022,0.55}, true)
 
     local innerW = scrollW - 10
     local normalizedHeaders = self:NormalizeColumns(child, headers)
@@ -1028,7 +1035,7 @@ function MCA:DrawRaidBuffMatrix(parent, data)
         end
     end
 
-    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -48}, parent:GetWidth()-16, parent:GetHeight()-58, {0.018,0.020,0.022,0.55})
+    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -48}, parent:GetWidth()-16, parent:GetHeight()-58, {0.018,0.020,0.022,0.55}, true)
 
     local playerColW = 190
     local roleColW = 70
@@ -1480,7 +1487,7 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
 
     local outerW = parent:GetWidth() - 16
     local outerH = parent:GetHeight() - 50
-    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -40}, outerW, outerH, {0.018,0.020,0.022,0.55})
+    local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -40}, outerW, outerH, {0.018,0.020,0.022,0.55}, true)
 
     local tableW = outerW - 28
     local metricLabel = wantHealer and "HPS" or "DPS"
