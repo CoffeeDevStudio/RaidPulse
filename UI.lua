@@ -1,6 +1,25 @@
 _G.MCA = _G.MCA or {}
 MCA = _G.MCA
 
+-- One content geometry for every full-page tab. These used to be written out
+-- at each call site and had drifted apart — most tabs sat at x=12 with a width
+-- of 1100, the history at x=20 with 1060, settings at 20 and the text summary
+-- at 24 — so the table visibly jumped sideways when switching tabs.
+--
+-- The scroll child is 1140 wide; 12 on the left and the remainder on the right
+-- leaves room for the scrollbar.
+local PAGE_X = 12          -- left margin of page content
+local PAGE_W = 1100        -- content width
+local PAGE_H = 430         -- standard panel height
+local PAGE_PAD = 8         -- inner padding for text drawn straight onto the page
+
+-- The same rectangle in absolute frame coordinates, for the dashboard and the
+-- summary, which are drawn on the frame rather than inside the scroll. The
+-- scroll sits at 154 and insets its child by 4, so PAGE_X lands content at 170
+-- and the two must match that to stop the layout shifting between tabs.
+local CONTENT_X = 170
+local CONTENT_W = 1100
+
 MCA.ClassIconCoords = {
     WARRIOR={0,0.25,0,0.25}, MAGE={0.25,0.5,0,0.25}, ROGUE={0.5,0.75,0,0.25}, DRUID={0.75,1,0,0.25},
     HUNTER={0,0.25,0.25,0.5}, SHAMAN={0.25,0.5,0.25,0.5}, PRIEST={0.5,0.75,0.25,0.5}, WARLOCK={0.75,1,0.25,0.5},
@@ -479,12 +498,12 @@ function MCA:GetModeDifficultyText(data)
 end
 
 function MCA:DrawTopDashboard(root, data)
-    local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 154, -36}, 290, 64, {0.018,0.021,0.024,0.50})
+    local info = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, -36}, 280, 64, {0.018,0.021,0.024,0.50})
     self:Text(info, data.boss or "Report", "GameFontHighlightLarge", {"TOPLEFT", info, "TOPLEFT", 16, -9}, 150, self:UIColor("purple"))
     self:Text(info, (data.result and "Completato" or "Wipe")..": "..(data.savedAt or date("%d/%m/%Y %H:%M")), "GameFontNormal", {"TOPLEFT", info, "TOPLEFT", 16, -36}, 220, self:UIColor("green"))
 
     local totals = self:GetTotals(data)
-    local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 466, -36}, 630, 64, {0.018,0.021,0.024,0.72})
+    local kpis = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + 300, -36}, 600, 64, {0.018,0.021,0.024,0.72})
     local cells = {
         {"Boss", totals.bossKilled.."/"..totals.bosses, self:UIColor("accent")},
         {"Durata", self:FormatTime(data.duration or 0), self:UIColor("accent")},
@@ -492,7 +511,7 @@ function MCA:DrawTopDashboard(root, data)
         {"Buff Raid", tostring(totals.buffActive or 0).."/"..tostring(totals.buffPresent or 0), self:UIColor((totals.buffMissing or 0) > 0 and "orange" or "green")},
         {"DPS Raid", self:FormatMetricValue(self:ComputeRaidDPS(data)), self:UIColor("accent")}
     }
-    local cellWidth = 126
+    local cellWidth = 120
     local x = 0
     for _, c in ipairs(cells) do
         local cell = CreateFrame("Frame", nil, kpis, "BackdropTemplate")
@@ -504,7 +523,7 @@ function MCA:DrawTopDashboard(root, data)
         x = x + cellWidth
     end
 
-    local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", 1118, -36}, 186, 64, {0.018,0.021,0.024,0.72})
+    local mode = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X + CONTENT_W - 180, -36}, 180, 64, {0.018,0.021,0.024,0.72})
     local icon = mode:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("LEFT", 20, 0)
     icon:SetSize(36,36)
@@ -836,6 +855,18 @@ function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
     self:UpdateScrollBar(child, scroll, math.abs(y)+20)
 end
 
+-- What killed a player, when we know it. The cause comes from the local
+-- player's own death recap and from DCAUSE messages sent by other RaidPulse
+-- users, so it is present for some rows and not others — this column used to
+-- be a hardcoded "-" on every single row.
+function MCA:DeathCauseText(player)
+    if not player then return "-" end
+
+    local spell = player.deathSpellName
+    if type(spell) ~= "string" or spell == "" or spell == "?" then return "-" end
+    return spell
+end
+
 function MCA:BuildDeathsRows(data, cols)
     -- cols: optional {time, player, boss, extra} column defs {x,w}. When omitted,
     -- falls back to the compact summary-card layout. This keeps the death rows
@@ -853,7 +884,7 @@ function MCA:BuildDeathsRows(data, cols)
                 {x=cols.time.x,   w=cols.time.w,   text=self:FormatTime(p.deathTime or 0), color=self:UIColor("white")},
                 {x=cols.player.x, w=cols.player.w, text=p.name or "?", color=self:UIColor("accent")},
                 {x=cols.boss.x,   w=cols.boss.w,   text=self:BossNameAtTime(data, p.deathTime or 0), color=self:UIColor("white")},
-                {x=cols.extra.x,  w=cols.extra.w,  text="-", color=self:UIColor("gray"), justify="CENTER"}
+                {x=cols.extra.x,  w=cols.extra.w,  text=self:DeathCauseText(p), color=self:UIColor("gray")}
             })
         end
     end
@@ -1021,7 +1052,7 @@ function MCA:DrawHistoryPage(parent)
     if filter then
         countText = countText .. "  (mostrati: " .. tostring(shown) .. ")"
     end
-    self:Text(parent, countText, "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 20, -56}, 250, self:UIColor("gray"))
+    self:Text(parent, countText, "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", PAGE_X, -56}, 250, self:UIColor("gray"))
 
     local function selectFilter(value)
         MCA.historyFilter = value
@@ -1029,12 +1060,12 @@ function MCA:DrawHistoryPage(parent)
         MCA:BuildDashboard(MCA.lastReport or {boss="Storico", players={}, bosses={}, timeline={}, type="raid"})
     end
 
-    self:Text(parent, "Esito:", "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", 280, -56}, 46, self:UIColor("gray"))
-    self:FilterButton(parent, "Tutti", {"TOPLEFT", parent, "TOPLEFT", 330, -50}, 72, 24,
+    self:Text(parent, "Esito:", "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 268, -56}, 46, self:UIColor("gray"))
+    self:FilterButton(parent, "Tutti", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 318, -50}, 72, 24,
         filter == nil, function() selectFilter(nil) end)
-    self:FilterButton(parent, "Kill (" .. kills .. ")", {"TOPLEFT", parent, "TOPLEFT", 408, -50}, 82, 24,
+    self:FilterButton(parent, "Kill (" .. kills .. ")", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 396, -50}, 82, 24,
         filter == "kill", function() selectFilter("kill") end)
-    self:FilterButton(parent, "Wipe (" .. wipes .. ")", {"TOPLEFT", parent, "TOPLEFT", 496, -50}, 82, 24,
+    self:FilterButton(parent, "Wipe (" .. wipes .. ")", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 484, -50}, 82, 24,
         filter == "wipe", function() selectFilter("wipe") end)
 
     -- The delete button always follows the filter, and spells out how many
@@ -1049,7 +1080,7 @@ function MCA:DrawHistoryPage(parent)
         deleteLabel, deleteCount = "Cancella storico (" .. #history .. ")", #history
     end
 
-    self:Button(parent, deleteLabel, {"TOPRIGHT", parent, "TOPRIGHT", -20, -50}, 180, 24, function()
+    self:Button(parent, deleteLabel, {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_W - 180, -50}, 180, 24, function()
         if deleteCount == 0 then
             MCA:Print("Nessun report da cancellare con questo filtro.")
             return
@@ -1064,8 +1095,8 @@ function MCA:DrawHistoryPage(parent)
     end, true)
 
     local header = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-    header:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, -92)
-    header:SetSize(1060, 28)
+    header:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, -92)
+    header:SetSize(PAGE_W, 28)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
 
     self:Text(header, "Data", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 10, 0}, 120, self:UIColor("white"))
@@ -1093,8 +1124,8 @@ function MCA:DrawHistoryPage(parent)
         rowIndex = rowIndex + 1
 
         local row = CreateFrame("Button", nil, parent, "BackdropTemplate")
-        row:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, y)
-        row:SetSize(1060, 30)
+        row:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
+        row:SetSize(PAGE_W, 30)
         self:SetBackdropSolid(row, rowIndex % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
 
         local resultText = isKill and "Kill" or "Wipe"
@@ -1130,9 +1161,9 @@ function MCA:DrawHistoryPage(parent)
     end
 
     if #history == 0 then
-        self:Text(parent, "Nessun report salvato. I prossimi report completati appariranno qui.", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 26, -130}, 620, self:UIColor("gray"))
+        self:Text(parent, "Nessun report salvato. I prossimi report completati appariranno qui.", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, -130}, 620, self:UIColor("gray"))
     elseif shown == 0 then
-        self:Text(parent, "Nessun report con esito " .. (filter == "kill" and "Kill" or "Wipe") .. ".", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", 26, -130}, 620, self:UIColor("gray"))
+        self:Text(parent, "Nessun report con esito " .. (filter == "kill" and "Kill" or "Wipe") .. ".", "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, -130}, 620, self:UIColor("gray"))
     end
 
     return math.abs(y) + 80
@@ -1160,7 +1191,7 @@ function MCA:DrawFullPage(root, data)
         }
 
         for _, s in ipairs(settings) do
-            self:Text(child, s[1]..": "..(RaidPulseDB.config[s[2]] and "ON" or "OFF"), "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", 20, y}, 200, RaidPulseDB.config[s[2]] and self:UIColor("green") or self:UIColor("red"))
+            self:Text(child, s[1]..": "..(RaidPulseDB.config[s[2]] and "ON" or "OFF"), "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 200, RaidPulseDB.config[s[2]] and self:UIColor("green") or self:UIColor("red"))
             self:Button(child, "Toggle", {"TOPLEFT", child, "TOPLEFT", 240, y+4}, 90, 22, function()
                 RaidPulseDB.config[s[2]] = not RaidPulseDB.config[s[2]]
                 MCA:BuildDashboard(data)
@@ -1169,42 +1200,42 @@ function MCA:DrawFullPage(root, data)
         end
 
     elseif self.activeTab == "players" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         self:DrawPlayerTable(panel, data)
         y = y - 450
 
     elseif self.activeTab == "playerDetail" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         self:DrawPlayerTable(panel, data, true)
         y = y - 450
 
     elseif self.activeTab == "interrupts" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         self:BuildInterruptPage(panel, data)
         y = y - 450
 
     elseif self.activeTab == "deaths" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         local deathCols = {
             time   = {x=10,  w=70},
             player = {x=90,  w=200},
             boss   = {x=300, w=260},
-            extra  = {x=570, w=80}
+            extra  = {x=570, w=400}
         }
         self:DrawSmallPanel(panel, "Deaths", nil, "red",
-            {{label="Tempo",x=deathCols.time.x,w=deathCols.time.w},{label="Player",x=deathCols.player.x,w=deathCols.player.w},{label="Boss",x=deathCols.boss.x,w=deathCols.boss.w},{label="HP",x=deathCols.extra.x,w=deathCols.extra.w,justify="CENTER"}},
+            {{label="Tempo",x=deathCols.time.x,w=deathCols.time.w},{label="Player",x=deathCols.player.x,w=deathCols.player.w},{label="Boss",x=deathCols.boss.x,w=deathCols.boss.w},{label="Causa",x=deathCols.extra.x,w=deathCols.extra.w}},
             self:BuildDeathsRows(data, deathCols))
         y = y - 450
 
     elseif self.activeTab == "buffs" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         self:DrawSmallPanel(panel, "Buff Raid", nil, "purple",
             {{label="Icona",x=10,w=45},{label="Debuff",x=60,w=180},{label="Player",x=260,w=120},{label="Stack",x=400,w=70},{label="Durata",x=500,w=90}},
             self:BuildRaidBuffRows(data))
         y = y - 450
 
     elseif self.activeTab == "timeline" then
-        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", 12, y}, 1100, 430)
+        local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
         local tlCols = {
             time   = {x=10,  w=70},
             event  = {x=90,  w=460},
@@ -1230,7 +1261,7 @@ function MCA:DrawFullPage(root, data)
         }
 
         for _, line in ipairs(lines) do
-            self:Text(child, line, "GameFontNormalLarge", {"TOPLEFT", child, "TOPLEFT", 24, y}, 420, self:UIColor("white"))
+            self:Text(child, line, "GameFontNormalLarge", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 420, self:UIColor("white"))
             y = y - 32
         end
     end
@@ -1386,7 +1417,7 @@ function MCA:DrawDashboardPage(root, data)
     -- v4.0.16 dashboard:
     -- Top row: DPS/Tank table left, Healer/HPS table right.
     -- Bottom row: Deaths, Timeline, Boss Breakdown.
-    local leftX, totalW = 154, 1152
+    local leftX, totalW = CONTENT_X, CONTENT_W
     local gap = 16
     local topY = -106
     local topH = 330
@@ -1405,7 +1436,7 @@ function MCA:DrawDashboardPage(root, data)
 
     local deathPanel = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", leftX, cardsY}, cardW, cardH)
     self:DrawSmallPanel(deathPanel, "Deaths", nil, "red",
-        {{label="Tempo",x=10,w=55},{label="Player",x=76,w=110},{label="Boss",x=198,w=110},{label="HP",x=320,w=38}},
+        {{label="Tempo",x=10,w=55},{label="Player",x=76,w=110},{label="Boss",x=198,w=110},{label="Causa",x=320,w=38}},
         self:BuildDeathsRows(data), nil)
 
     local timelinePanel = self:Panel(root, {"TOPLEFT", root, "TOPLEFT", leftX + cardW + gap, cardsY}, cardW, cardH)
