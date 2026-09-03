@@ -8,15 +8,18 @@ MCA = _G.MCA
 --
 -- The scroll child is 1140 wide; 12 on the left and the remainder on the right
 -- leaves room for the scrollbar.
-local PAGE_X = 12          -- left margin of page content
-local PAGE_W = 1100        -- content width
+-- Scroll() insets its child by 4 and sizes it to CONTENT_W - 10, so these are
+-- the margins *inside* that child: a small inset off the container border, and
+-- a wider one on the right where the scrollbar sits.
+local PAGE_X = 8           -- left margin of page content, inside the scroll
+local PAGE_W = 1058        -- content width (child is 1090; 24 left for the scrollbar)
 local PAGE_H = 430         -- standard panel height
 local PAGE_PAD = 8         -- inner padding for text drawn straight onto the page
 
--- The same rectangle in absolute frame coordinates, for the dashboard and the
--- summary, which are drawn on the frame rather than inside the scroll. The
--- scroll sits at 154 and insets its child by 4, so PAGE_X lands content at 170
--- and the two must match that to stop the layout shifting between tabs.
+-- The rectangle everything occupies, in frame coordinates: the dashboard, the
+-- summary panels, and the scroll container that holds every other tab. The
+-- container used to sit at 154 with width 1150 while the dashboard sat at 170
+-- with 1100, so the box visibly overhung the panels above it.
 local CONTENT_X = 170
 local CONTENT_W = 1100
 
@@ -1228,7 +1231,7 @@ function MCA:DrawPageTable(parent, headers, rows, y)
 end
 
 function MCA:DrawFullPage(root, data)
-    local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", 154, -112}, 1150, 535, {0.018,0.020,0.022,0.65})
+    local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, -112}, CONTENT_W, 535, {0.018,0.020,0.022,0.65})
 
     local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
