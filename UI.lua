@@ -693,7 +693,11 @@ end
 
 
 function MCA:DrawBossBreakdown(parent, data)
-    self:Text(parent, "Boss Breakdown", "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -10}, 160, self:UIColor("accent"))
+    -- Content starts at -42, so the band centre is -21. The width also stops
+    -- being a fixed 160, which would have offset the centring on any panel
+    -- that is not exactly that wide.
+    self:Text(parent, "Boss Breakdown", "GameFontHighlightLarge",
+        {"CENTER", parent, "TOP", 0, -21}, parent:GetWidth()-28, self:UIColor("accent"), "CENTER")
 
     local bosses = self:GetWindows(data)
     local y = -42
@@ -751,7 +755,8 @@ end
 
 function MCA:DrawBossDetail(parent, data)
     local boss = self.selectedBoss or (self:GetWindows(data)[1])
-    self:Text(parent, "Dettaglio: "..(boss and boss.name or "Encounter"), "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -8}, 240, self:UIColor("accent"))
+    self:Text(parent, "Dettaglio: "..(boss and boss.name or "Encounter"), "GameFontHighlightLarge",
+        {"CENTER", parent, "TOP", 0, -19}, parent:GetWidth()-28, self:UIColor("accent"), "CENTER")
 
     local _, child, scroll = self:Scroll(parent, {"TOPLEFT", parent, "TOPLEFT", 8, -38}, parent:GetWidth()-16, parent:GetHeight()-44, {0.018,0.020,0.022,0.55})
 
@@ -817,7 +822,12 @@ end
 
 function MCA:DrawSmallPanel(parent, title, iconSpell, colorName, headers, rows)
     local color = self:UIColor(colorName or "accent")
-    self:Text(parent, title, "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -12}, parent:GetWidth()-28, color)
+    -- Centred in the header band, which runs from the panel top down to where
+    -- the scroll starts. Anchoring the string's own CENTER to the panel's TOP
+    -- centres it on both axes at once, rather than pinning a corner and
+    -- guessing at the offsets.
+    self:Text(parent, title, "GameFontHighlightLarge",
+        {"CENTER", parent, "TOP", 0, -25}, parent:GetWidth()-28, color, "CENTER")
 
     local scrollW = parent:GetWidth() - 16
     local scrollH = parent:GetHeight() - 62
@@ -955,7 +965,8 @@ end
 
 
 function MCA:DrawRaidBuffMatrix(parent, data)
-    self:Text(parent, "Buff Raid", "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -12}, 180, self:UIColor("purple"))
+    self:Text(parent, "Buff Raid", "GameFontHighlightLarge",
+        {"CENTER", parent, "TOP", 0, -24}, parent:GetWidth()-28, self:UIColor("purple"), "CENTER")
 
     local matrix = data and data.raidBuffMatrix
     if not matrix then
@@ -1354,7 +1365,9 @@ function MCA:BuildRoleList(data, wantHealer)
 end
 
 function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
-    self:Text(parent, title, "GameFontHighlightLarge", {"TOPLEFT", parent, "TOPLEFT", 14, -10}, parent:GetWidth()-28, self:UIColor("accent"))
+    -- Header band is 40px here (the scroll starts at -40), so the centre is -20.
+    self:Text(parent, title, "GameFontHighlightLarge",
+        {"CENTER", parent, "TOP", 0, -20}, parent:GetWidth()-28, self:UIColor("accent"), "CENTER")
 
     local outerW = parent:GetWidth() - 16
     local outerH = parent:GetHeight() - 50
