@@ -122,6 +122,8 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         MCA:ShowExportWindow(MCA.lastReport)
     elseif msg == "share" then
         MCA:ShareSummary(MCA.lastReport)
+    elseif msg == "meter" then
+        if MCA.ReportDamageMeterState then MCA:ReportDamageMeterState() end
     elseif msg == "pool" then
         if MCA.ReportWidgetPool then MCA:ReportWidgetPool() end
     elseif msg == "watcher" or msg == "deaths" then
@@ -162,6 +164,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             end
         end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher, /rp pool")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher, /rp pool, /rp meter")
     end
 end

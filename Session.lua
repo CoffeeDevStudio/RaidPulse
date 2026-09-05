@@ -544,6 +544,78 @@ function MCA:CaptureMythicPlusOverallDamageHealing()
     -- Keep stable encounter capture only until the meter API is mapped safely.
     return false
 end
+-- Diagnostic for /rp meter. DPS arriving empty has several possible causes —
+-- no meter API, no sessions, a session that matches nothing, sources that
+-- match no roster player — and the report shows the same "-" for all of them.
+function MCA:ReportDamageMeterState()
+    if not C_DamageMeter then
+        self:Print("C_DamageMeter non esiste su questo client.")
+        return
+    end
+    self:Print("Damage meter disponibile: " .. tostring(self:DamageMeterAvailable()))
+
+    if not C_DamageMeter.GetAvailableCombatSessions then
+        self:Print("  GetAvailableCombatSessions assente.")
+        return
+    end
+
+    local ok, sessions = pcall(C_DamageMeter.GetAvailableCombatSessions)
+    if not ok or type(sessions) ~= "table" then
+        self:Print("  GetAvailableCombatSessions ha fallito.")
+        return
+    end
+
+    self:Print(string.format("  Sessioni disponibili: %d", #sessions))
+    for i, info in ipairs(sessions) do
+        if i > 12 then
+            self:Print("    ... e altre " .. (#sessions - 12))
+            break
+        end
+        self:Print(string.format("    [%s] '%s'  durata=%.0fs",
+            tostring(info and info.sessionID), tostring(info and info.name),
+            tonumber(info and info.durationSeconds or 0) or 0))
+    end
+
+    local report = self.session or self.lastReport
+    if not report then
+        self:Print("  Nessuna sessione o report su cui provare il match.")
+        return
+    end
+
+    self:Print(string.format("  Report: '%s' (tipo %s)",
+        tostring(report.boss), tostring(report.type)))
+    if report.type == "M+" then
+        self:Print("    NOTA: in M+ 'boss' e' il nome del dungeon, mentre il meter")
+        self:Print("    nomina le sessioni per boss: il match per nome non puo' riuscire.")
+    end
+
+    local sid = self:FindBlizzardDamageMeterSessionID(report.boss)
+    self:Print("    sessionID scelto: " .. tostring(sid))
+
+    local dpsType = self:GetDamageMeterEnumValue("DamageMeterType", "Dps", 1)
+    local sess = self:GetBlizzardDamageMeterSession(sid, dpsType)
+    if type(sess) ~= "table" then
+        self:Print("    GetBlizzardDamageMeterSession non ha restituito una tabella.")
+        return
+    end
+
+    local sources = type(sess.combatSources) == "table" and sess.combatSources or nil
+    if not sources then
+        self:Print("    la sessione non espone combatSources.")
+        return
+    end
+
+    self:Print(string.format("    sorgenti: %d", #sources))
+    for i, src in ipairs(sources) do
+        if i > 8 then break end
+        local name = self:GetSafeDamageMeterString(src, "name")
+        local dps = tonumber(src.amountPerSecond or src.dps or 0) or 0
+        local p = self:FindSessionPlayerByDamageMeterSource(src)
+        self:Print(string.format("      '%s' dps=%.0f -> %s",
+            tostring(name), dps, p and ("match: " .. tostring(p.name)) or "NESSUN match nel roster"))
+    end
+end
+
 function MCA:CaptureDamageMeterStats()
 
     -- MCA 4.2.6 M+ overall first.
