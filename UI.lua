@@ -1520,17 +1520,22 @@ end
 -- who dies in the same place every time. The history already holds every
 -- attempt in full; this only lines them up side by side.
 -- ---------------------------------------------------------------------------
-local COMPARE_ATTEMPTS = 6      -- as many columns as the page width fits
+-- Columns get narrow fast, so cap how many attempts render at once. Selecting
+-- more than this keeps the newest and says so rather than squeezing "156k +2"
+-- into 60 pixels.
+local COMPARE_MAX_COLUMNS = 8
 
--- savedAt is "dd/mm/yyyy HH:MM" and the columns only have room for the clock,
+-- savedAt is "dd/mm/yyyy HH:MM" and the chips only have room for the clock,
 -- which is what tells attempts apart within one night anyway.
 local function attemptLabel(report)
     local t = tostring(report and report.savedAt or "")
     return t:match("(%d%d:%d%d)%s*$") or t
 end
 
--- The most recent attempts on the same boss, newest first.
-function MCA:GetComparisonAttempts(data)
+-- Every saved attempt on the same fight, newest first. For a raid that means
+-- the same boss; for a key, session.boss is the dungeon, so it means the same
+-- dungeon — which is the comparison worth making in both cases.
+function MCA:GetComparisonCandidates(data)
     local boss = data and data.boss
     if not boss or boss == "" then return {} end
 
@@ -1538,26 +1543,112 @@ function MCA:GetComparisonAttempts(data)
     local out = {}
     for i = #history, 1, -1 do
         local r = history[i]
-        if r and r.boss == boss then
-            out[#out + 1] = r
-            if #out >= COMPARE_ATTEMPTS then break end
-        end
+        if r and r.boss == boss and r.historyID then out[#out + 1] = r end
     end
     return out
 end
 
+-- Selection is per fight: switching to a different boss starts fresh rather
+-- than carrying over ticks that refer to another encounter's attempts.
+function MCA:GetCompareSelection(candidates, boss)
+    if self.compareBoss ~= boss then
+        self.compareBoss = boss
+        self.compareSelection = nil
+    end
+
+    if not self.compareSelection then
+        -- Default to the newest few, so the tab is useful before touching it.
+        self.compareSelection = {}
+        for i = 1, math.min(#candidates, 4) do
+            self.compareSelection[candidates[i].historyID] = true
+        end
+    end
+
+    return self.compareSelection
+end
+
 function MCA:DrawComparePage(parent, data, y)
-    local attempts = self:GetComparisonAttempts(data)
+    local boss = data and data.boss
+    local candidates = self:GetComparisonCandidates(data)
+
+    if #candidates < 2 then
+        self:Text(parent, "Servono almeno due tentativi salvati su " .. tostring(boss or "questo boss")
+            .. " per un confronto.", "GameFontNormal",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, 700, self:UIColor("gray"))
+        return y - 40
+    end
+
+    local selection = self:GetCompareSelection(candidates, boss)
+
+    local function rebuild()
+        MCA.activeTab = "compare"
+        MCA:BuildDashboard(MCA:GetLastAvailableReport())
+    end
+
+    -- Selectable attempts, wrapped across as many rows as it takes.
+    self:Text(parent, "Tentativi su " .. tostring(boss) .. " — clicca per includerli nel confronto:",
+        "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4},
+        700, self:UIColor("gray"))
+    y = y - 24
+
+    local chipW, chipH, chipGap = 104, 24, 6
+    local perRow = math.max(1, math.floor((PAGE_W + chipGap) / (chipW + chipGap)))
+    local selectedCount = 0
+
+    for i, r in ipairs(candidates) do
+        local col = (i - 1) % perRow
+        local row = math.floor((i - 1) / perRow)
+        local on = selection[r.historyID] and true or false
+        if on then selectedCount = selectedCount + 1 end
+
+        self:FilterButton(parent,
+            attemptLabel(r) .. (r.result and "" or " ✖"),
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + col * (chipW + chipGap), y - row * (chipH + chipGap)},
+            chipW, chipH, on,
+            function()
+                selection[r.historyID] = (not on) or nil
+                rebuild()
+            end)
+    end
+
+    local rowsUsed = math.ceil(#candidates / perRow)
+    y = y - rowsUsed * (chipH + chipGap) - 6
+
+    self:Button(parent, "Deseleziona tutto",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 4}, 150, 24,
+        function()
+            MCA.compareSelection = {}
+            rebuild()
+        end)
+    self:Button(parent, "Ultimi 4",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 160, y - 4}, 110, 24,
+        function()
+            MCA.compareSelection = nil   -- rebuilt as the default newest few
+            rebuild()
+        end)
+    y = y - 38
+
+    -- Selected attempts, newest first, capped at what the width can show.
+    local attempts, dropped = {}, 0
+    for _, r in ipairs(candidates) do
+        if selection[r.historyID] then
+            if #attempts < COMPARE_MAX_COLUMNS then
+                attempts[#attempts + 1] = r
+            else
+                dropped = dropped + 1
+            end
+        end
+    end
 
     if #attempts < 2 then
-        self:Text(parent, "Serve piu' di un tentativo sullo stesso boss per un confronto.",
-            "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6},
-            700, self:UIColor("gray"))
+        self:Text(parent, "Selezionane almeno due.", "GameFontNormal",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, 700, self:UIColor("gray"))
         return y - 40
     end
 
     local nameCol = {x = 10, w = 210}
-    local colW, firstX = 140, 230
+    local firstX = 230
+    local colW = math.max(90, math.floor((PAGE_W - firstX) / #attempts))
 
     local headers = {{label = "Player", x = nameCol.x, w = nameCol.w}}
     for i, r in ipairs(attempts) do
@@ -1567,8 +1658,8 @@ function MCA:DrawComparePage(parent, data, y)
         }
     end
 
-    -- One row per player seen in any attempt, ordered by how they did in the
-    -- most recent one so the table reads top-down like the summary does.
+    -- One row per player seen in any selected attempt, ordered by how they did
+    -- in the newest one so the table reads top-down like the summary does.
     local seen, names = {}, {}
     for _, r in ipairs(attempts) do
         for _, p in pairs(r.players or {}) do
@@ -1620,10 +1711,15 @@ function MCA:DrawComparePage(parent, data, y)
     end
 
     y = self:DrawPageTable(parent, headers, rows, y)
-    self:Text(parent, "Verde/rosso = variazione oltre il 5% rispetto al tentativo precedente. "
-        .. "\"+N\" = morti in quel tentativo. \"✖\" nell'intestazione = wipe.",
-        "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10},
-        900, self:UIColor("gray"))
+
+    local legend = "Verde/rosso = variazione oltre il 5% rispetto al tentativo precedente. "
+        .. "\"+N\" = morti. \"✖\" = wipe."
+    if dropped > 0 then
+        legend = legend .. "  (" .. dropped .. " selezionati oltre i " .. COMPARE_MAX_COLUMNS
+            .. " visualizzabili non sono mostrati.)"
+    end
+    self:Text(parent, legend, "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 1000, self:UIColor("gray"))
     return y - 40
 end
 
