@@ -647,8 +647,15 @@ function MCA:CaptureDamageMeterStats()
         self:CaptureBlizzardInterrupts(self.session, sessionID)
     end
 
-    if self.Debug then
-        self:Debug("Blizzard DamageMeter captured: sessionID=" .. tostring(sessionID) .. " dps=" .. tostring(dpsApplied) .. " hps=" .. tostring(hpsApplied))
+    -- Applying nothing is the failure that shows up as "-" on every row, so
+    -- say so out loud instead of leaving it to the debug channel.
+    if (dpsApplied or 0) == 0 and (hpsApplied or 0) == 0 then
+        self:Print(string.format(
+            "Damage meter: nessun dato applicato (sessionID=%s). Usa /rp meter per capire dove si ferma.",
+            tostring(sessionID)))
+    else
+        self:Debug("Blizzard DamageMeter captured: sessionID=" .. tostring(sessionID)
+            .. " dps=" .. tostring(dpsApplied) .. " hps=" .. tostring(hpsApplied))
     end
 end
 
@@ -710,7 +717,11 @@ local function tryStep(self, name, ...)
 
     local ok, err = pcall(fn, self, ...)
     if not ok then
-        self:Debug("FinalizeSession: " .. name .. " failed: " .. tostring(err))
+        -- Printed, not merely logged to debug. Swallowing the error keeps the
+        -- report — which is the point — but a step failing here silently
+        -- removes a headline number from it, and a "-" with no explanation is
+        -- worse than a noisy line telling you which step gave up.
+        self:Print("Errore in " .. name .. ": " .. tostring(err))
     end
 end
 
