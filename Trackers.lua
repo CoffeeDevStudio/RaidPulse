@@ -144,8 +144,21 @@ function MCA:MarkDead(unit)
     if type(name) ~= "string" then return end
     local players = self.session.players
     if not players then return end
+
     local ok, player = pcall(rawget, players, name)
-    if not ok or not player or player.deadSeen then return end
+    if not ok then return end
+
+    -- The roster is a snapshot taken at the pull, so anyone still zoning in or
+    -- out of range at that moment was missing from it and their deaths were
+    -- dropped without a word. Add them on sight instead.
+    if not player then
+        local _, class = UnitClass(unit)
+        player = self:CreateEmptyPlayer(name, class, self:GetUnitRole(unit), UnitGUID(unit), unit)
+        players[name] = player
+        self:Debug("Death watcher: " .. name .. " non era nel roster, aggiunto")
+    end
+
+    if player.deadSeen then return end
 
     player.deaths = (player.deaths or 0) + 1
     player.deadSeen = true
@@ -254,6 +267,19 @@ function MCA:ReportWatcherState()
     self:Print(string.format("  Gruppo: %d membri, IsInRaid=%s | roster sessione: %d",
         GetNumGroupMembers() or 0, tostring(IsInRaid() and true or false), rosterCount))
 
+    -- Totals first: "only mine" is the symptom that matters, and it is far
+    -- easier to see in one line than by reading twenty-five.
+    local withDeaths, withDef, withInt, total = 0, 0, 0, 0
+    for _, p in pairs(players) do
+        total = total + 1
+        if (p.deaths or 0) > 0 then withDeaths = withDeaths + 1 end
+        if #(p.used or {}) > 0 then withDef = withDef + 1 end
+        if (tonumber(p.blizzardInterrupts) or 0) > 0 then withInt = withInt + 1 end
+    end
+    self:Print(string.format(
+        "  Su %d giocatori: %d con morti, %d con difensive, %d con interrupt",
+        total, withDeaths, withDef, withInt))
+
     visitGroupUnits(function(unit)
         if not UnitExists(unit) then return end
         local name = UnitName(unit)
@@ -267,8 +293,11 @@ function MCA:ReportWatcherState()
             self:Print(string.format("  %s (%s): NON nel roster della sessione "
                 .. "-- le sue morti non verranno contate", unit, name))
         else
-            self:Print(string.format("  %s (%s): morto=%s deadSeen=%s conteggio=%d",
-                unit, name, tostring(dead), tostring(p.deadSeen or false), p.deaths or 0))
+            self:Print(string.format(
+                "  %s (%s): morto=%s deadSeen=%s morti=%d difensive=%d interrupt=%s",
+                unit, name, tostring(dead), tostring(p.deadSeen or false),
+                p.deaths or 0, #(p.used or {}),
+                p.blizzardInterrupts and tostring(p.blizzardInterrupts) or "-"))
         end
     end)
 end

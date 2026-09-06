@@ -220,12 +220,15 @@ function MCA:GetSortedInterruptPlayers(report)
 end
 
 function MCA:CaptureBlizzardInterrupts(report, sessionID)
-    if not report or not sessionID then return end
+    if not report then return end
     if not C_DamageMeter or not Enum or not Enum.DamageMeterType or not Enum.DamageMeterType.Interrupts then return end
-    if type(C_DamageMeter.GetCombatSessionFromID) ~= "function" then return end
 
-    local ok, data = pcall(C_DamageMeter.GetCombatSessionFromID, sessionID, Enum.DamageMeterType.Interrupts)
-    if not ok or type(data) ~= "table" or type(data.combatSources) ~= "table" then return end
+    -- Goes through the same lookup the damage capture uses. Requiring a
+    -- sessionID outright meant interrupts vanished whenever the name match
+    -- failed, while DPS carried on regardless because that path falls back to
+    -- asking for a session by type.
+    local data = self:GetBlizzardDamageMeterSession(sessionID, Enum.DamageMeterType.Interrupts)
+    if type(data) ~= "table" or type(data.combatSources) ~= "table" then return end
 
     report.blizzardInterrupts = report.blizzardInterrupts or {}
 
