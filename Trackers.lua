@@ -43,7 +43,19 @@ function MCA:RecordDefensive(player, spellID, source)
 
 end
 
+-- Tally of which unit tokens the cast event actually arrives for. Defensives
+-- showing up only for the local player has two possible causes that call for
+-- completely different fixes: either the event never fires for other raid
+-- members, or it fires and the spell is not recognised as a defensive. Only a
+-- count of the raw events can tell them apart.
+MCA.castEventTally = MCA.castEventTally or {}
+
 function MCA:UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID)
+    if unit then
+        local bucket = tostring(unit):gsub("%d+$", "N")
+        self.castEventTally[bucket] = (self.castEventTally[bucket] or 0) + 1
+    end
+
     if not self.session or not unit or not spellID then return end
 
     -- Retail/Midnight: some cast payloads carry names that are "secret
@@ -279,6 +291,14 @@ function MCA:ReportWatcherState()
     self:Print(string.format(
         "  Su %d giocatori: %d con morti, %d con difensive, %d con interrupt",
         total, withDeaths, withDef, withInt))
+
+    local parts = {}
+    for bucket, n in pairs(self.castEventTally or {}) do
+        parts[#parts + 1] = bucket .. "=" .. n
+    end
+    table.sort(parts)
+    self:Print("  Eventi UNIT_SPELLCAST_SUCCEEDED per unita': "
+        .. (#parts > 0 and table.concat(parts, " ") or "nessuno"))
 
     visitGroupUnits(function(unit)
         if not UnitExists(unit) then return end
