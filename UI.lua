@@ -1317,11 +1317,11 @@ function MCA:DrawRaidBuffMatrix(parent, data)
         for _, buff in ipairs(buffs) do
             local has = p.buffs and p.buffs[buff.key]
             if has == true then
-                self:Text(row, "●", "GameFontHighlightLarge", {"LEFT", row, "LEFT", x, 0}, buffColW, self:UIColor("green"), "CENTER")
+                self:Text(row, "OK", "GameFontNormalSmall", {"LEFT", row, "LEFT", x, 0}, buffColW, self:UIColor("green"), "CENTER")
             elseif has == false then
                 self:Text(row, "X", "GameFontHighlightLarge", {"LEFT", row, "LEFT", x, 0}, buffColW, self:UIColor("red"), "CENTER")
             else
-                self:Text(row, "–", "GameFontNormalLarge", {"LEFT", row, "LEFT", x, 0}, buffColW, self:UIColor("gray"), "CENTER")
+                self:Text(row, "-", "GameFontNormalLarge", {"LEFT", row, "LEFT", x, 0}, buffColW, self:UIColor("gray"), "CENTER")
             end
             x = x + buffColW
         end
@@ -1582,9 +1582,19 @@ local COMPARE_MAX_COLUMNS = 8
 
 -- savedAt is "dd/mm/yyyy HH:MM" and the chips only have room for the clock,
 -- which is what tells attempts apart within one night anyway.
+--
+-- Kill or wipe is carried by colour rather than a symbol: WoW's fonts cover
+-- Latin-1 but not the dingbat range, so the "nh" that used to be
+-- appended here came out as an empty box on every chip and column header.
+-- Inline colour codes always render.
 local function attemptLabel(report)
     local t = tostring(report and report.savedAt or "")
-    return t:match("(%d%d:%d%d)%s*$") or t
+    t = t:match("(%d%d:%d%d)%s*$") or t
+
+    if report and report.result then
+        return "|cff55dd55" .. t .. "|r"
+    end
+    return "|cffff5555" .. t .. "|r"
 end
 
 -- Every fight in the history worth comparing: one entry per boss (raid) or
@@ -1724,7 +1734,7 @@ function MCA:DrawComparePage(parent, data, y)
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300, self:UIColor("gray"))
     y = chipGrid(self, parent, y - 28, candidates, 104, function(r, point, w, h)
         local on = selection[r.historyID] and true or false
-        self:FilterButton(parent, attemptLabel(r) .. (r.result and "" or " ✖"),
+        self:FilterButton(parent, attemptLabel(r),
             point, w, h, on,
             function()
                 selection[r.historyID] = (not on) or nil
@@ -1776,7 +1786,7 @@ function MCA:DrawComparePage(parent, data, y)
     local headers = {{label = "Player", x = nameCol.x, w = nameCol.w}}
     for i, r in ipairs(attempts) do
         headers[#headers + 1] = {
-            label = attemptLabel(r) .. (r.result and "" or " ✖"),
+            label = attemptLabel(r),
             x = firstX + (i - 1) * colW, w = colW - 10, justify = "CENTER",
         }
     end

@@ -150,7 +150,7 @@ SlashCmdList["RAIDPULSE"] = function(msg)
                 MCA:Print("  Nessun report recente da confrontare.")
             elseif rep.type ~= "raid" then
                 MCA:Print("  Ultimo report: " .. tostring(rep.boss) ..
-                    " (M+ — i parse coprono solo i raid).")
+                    " (M+: i parse coprono solo i raid).")
             else
                 local enc = (db.encounters or {})[rep.encounterID or -1]
                 if enc then
