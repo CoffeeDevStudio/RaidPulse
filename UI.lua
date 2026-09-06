@@ -1532,11 +1532,42 @@ local function attemptLabel(report)
     return t:match("(%d%d:%d%d)%s*$") or t
 end
 
--- Every saved attempt on the same fight, newest first. For a raid that means
--- the same boss; for a key, session.boss is the dungeon, so it means the same
--- dungeon — which is the comparison worth making in both cases.
-function MCA:GetComparisonCandidates(data)
-    local boss = data and data.boss
+-- Every fight in the history worth comparing: one entry per boss (raid) or
+-- dungeon (key), with at least two saved attempts, most recently played first.
+--
+-- Listing these is what lets the tab work while standing in a city doing
+-- nothing. It used to compare only the fight of whichever report happened to
+-- be open, which meant the answer to "how did we do on the other boss" was to
+-- go find that report first.
+function MCA:GetComparableFights()
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+
+    local byBoss, order = {}, {}
+    for _, r in ipairs(history) do
+        if r and r.boss and r.boss ~= "" and r.historyID then
+            local entry = byBoss[r.boss]
+            if not entry then
+                entry = {boss = r.boss, type = r.type, count = 0, latest = 0}
+                byBoss[r.boss] = entry
+                order[#order + 1] = entry
+            end
+            entry.count = entry.count + 1
+            entry.latest = math.max(entry.latest, tonumber(r.savedAtEpoch) or 0)
+        end
+    end
+
+    -- A single attempt has nothing to be compared against, so it is not offered.
+    local out = {}
+    for _, entry in ipairs(order) do
+        if entry.count >= 2 then out[#out + 1] = entry end
+    end
+
+    table.sort(out, function(a, b) return a.latest > b.latest end)
+    return out
+end
+
+-- Every saved attempt on one fight, newest first.
+function MCA:GetComparisonCandidates(boss)
     if not boss or boss == "" then return {} end
 
     local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
@@ -1548,14 +1579,31 @@ function MCA:GetComparisonCandidates(data)
     return out
 end
 
--- Selection is per fight: switching to a different boss starts fresh rather
--- than carrying over ticks that refer to another encounter's attempts.
-function MCA:GetCompareSelection(candidates, boss)
-    if self.compareBoss ~= boss then
-        self.compareBoss = boss
-        self.compareSelection = nil
+-- Which fight the tab is showing. Prefers an explicit pick, then the open
+-- report's own fight, then whatever was played most recently — so opening the
+-- tab always lands on something rather than on an empty page.
+function MCA:GetCompareBoss(fights, data)
+    for _, f in ipairs(fights) do
+        if f.boss == self.compareBoss then return self.compareBoss end
     end
 
+    local preferred = data and data.boss
+    for _, f in ipairs(fights) do
+        if f.boss == preferred then
+            self.compareBoss = preferred
+            self.compareSelection = nil
+            return preferred
+        end
+    end
+
+    self.compareBoss = fights[1] and fights[1].boss
+    self.compareSelection = nil
+    return self.compareBoss
+end
+
+-- Selection is per fight: switching fights starts fresh rather than carrying
+-- ticks that refer to another encounter's attempts.
+function MCA:GetCompareSelection(candidates)
     if not self.compareSelection then
         -- Default to the newest few, so the tab is useful before touching it.
         self.compareSelection = {}
@@ -1563,70 +1611,79 @@ function MCA:GetCompareSelection(candidates, boss)
             self.compareSelection[candidates[i].historyID] = true
         end
     end
-
     return self.compareSelection
 end
 
-function MCA:DrawComparePage(parent, data, y)
-    local boss = data and data.boss
-    local candidates = self:GetComparisonCandidates(data)
+-- Lay a row of chips out across the page, wrapping as needed. Returns the y
+-- below the last row.
+local function chipGrid(self, parent, y, items, chipW, render)
+    local chipH, gap = 24, 6
+    local perRow = math.max(1, math.floor((PAGE_W + gap) / (chipW + gap)))
 
-    if #candidates < 2 then
-        self:Text(parent, "Servono almeno due tentativi salvati su " .. tostring(boss or "questo boss")
-            .. " per un confronto.", "GameFontNormal",
-            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, 700, self:UIColor("gray"))
-        return y - 40
+    for i, item in ipairs(items) do
+        local col, row = (i - 1) % perRow, math.floor((i - 1) / perRow)
+        render(item,
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + col * (chipW + gap), y - row * (chipH + gap)},
+            chipW, chipH)
     end
 
-    local selection = self:GetCompareSelection(candidates, boss)
+    return y - math.ceil(#items / perRow) * (chipH + gap)
+end
+
+function MCA:DrawComparePage(parent, data, y)
+    local fights = self:GetComparableFights()
+
+    if #fights == 0 then
+        self:Text(parent, "Nessun fight con almeno due tentativi salvati da confrontare.",
+            "GameFontNormal", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6},
+            700, self:UIColor("gray"))
+        return y - 40
+    end
 
     local function rebuild()
         MCA.activeTab = "compare"
         MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end
 
-    -- Selectable attempts, wrapped across as many rows as it takes.
-    self:Text(parent, "Tentativi su " .. tostring(boss) .. " — clicca per includerli nel confronto:",
-        "GameFontNormalSmall", {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4},
-        700, self:UIColor("gray"))
-    y = y - 24
+    local boss = self:GetCompareBoss(fights, data)
 
-    local chipW, chipH, chipGap = 104, 24, 6
-    local perRow = math.max(1, math.floor((PAGE_W + chipGap) / (chipW + chipGap)))
-    local selectedCount = 0
+    -- Fight picker.
+    self:Text(parent, "Boss / dungeon:", "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4}, 300, self:UIColor("gray"))
+    y = chipGrid(self, parent, y - 22, fights, 208, function(f, point, w, h)
+        local tag = (f.type == "M+") and "M+" or "Raid"
+        self:FilterButton(parent, f.boss .. "  (" .. f.count .. " " .. tag .. ")",
+            point, w, h, f.boss == boss,
+            function()
+                MCA.compareBoss = f.boss
+                MCA.compareSelection = nil
+                rebuild()
+            end)
+    end)
 
-    for i, r in ipairs(candidates) do
-        local col = (i - 1) % perRow
-        local row = math.floor((i - 1) / perRow)
+    -- Attempt picker for the chosen fight.
+    local candidates = self:GetComparisonCandidates(boss)
+    local selection = self:GetCompareSelection(candidates)
+
+    self:Text(parent, "Tentativi da confrontare:", "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300, self:UIColor("gray"))
+    y = chipGrid(self, parent, y - 28, candidates, 104, function(r, point, w, h)
         local on = selection[r.historyID] and true or false
-        if on then selectedCount = selectedCount + 1 end
-
-        self:FilterButton(parent,
-            attemptLabel(r) .. (r.result and "" or " ✖"),
-            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + col * (chipW + chipGap), y - row * (chipH + chipGap)},
-            chipW, chipH, on,
+        self:FilterButton(parent, attemptLabel(r) .. (r.result and "" or " ✖"),
+            point, w, h, on,
             function()
                 selection[r.historyID] = (not on) or nil
                 rebuild()
             end)
-    end
-
-    local rowsUsed = math.ceil(#candidates / perRow)
-    y = y - rowsUsed * (chipH + chipGap) - 6
+    end)
 
     self:Button(parent, "Deseleziona tutto",
-        {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 4}, 150, 24,
-        function()
-            MCA.compareSelection = {}
-            rebuild()
-        end)
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 8}, 150, 24,
+        function() MCA.compareSelection = {} rebuild() end)
     self:Button(parent, "Ultimi 4",
-        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 160, y - 4}, 110, 24,
-        function()
-            MCA.compareSelection = nil   -- rebuilt as the default newest few
-            rebuild()
-        end)
-    y = y - 38
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 160, y - 8}, 110, 24,
+        function() MCA.compareSelection = nil rebuild() end)
+    y = y - 42
 
     -- Selected attempts, newest first, capped at what the width can show.
     local attempts, dropped = {}, 0
