@@ -11,13 +11,33 @@ MCA = _G.MCA
 -- so the pieces cannot drift apart again: the window used to leave 8px on the
 -- left and 50 on the right because the content width was written out by hand.
 -- ---------------------------------------------------------------------------
+-- Sized to the screen instead of fixed at 1320x780, so the lists get as much
+-- room as the display allows and need less scrolling. Clamped at both ends:
+-- never smaller than the layout was designed for, never so large it runs off
+-- a big screen or becomes unwieldy.
 local FRAME_W, FRAME_H = 1320, 780
+do
+    local uiW, uiH
+    if UIParent and UIParent.GetSize then
+        local ok, w, h = pcall(UIParent.GetSize, UIParent)
+        if ok and type(w) == "number" and type(h) == "number" then uiW, uiH = w, h end
+    end
+
+    if uiW and uiH and uiW > 0 and uiH > 0 then
+        FRAME_W = math.max(1320, math.min(1800, math.floor(uiW - 80)))
+        FRAME_H = math.max(780,  math.min(1050, math.floor(uiH - 60)))
+    end
+end
 local MARGIN = 8            -- same on the left, the right and the top
 local GAP = 16              -- between blocks, on both axes
 local BTN_H = 34
 
 local SIDE_X, SIDE_Y = MARGIN, -MARGIN
-local SIDE_W, SIDE_H = 138, 702
+-- The sidebar spans everything above the button row, so it has to be derived
+-- from the frame height rather than pinned at the 702 that suited 780.
+local SIDE_W = 138
+local SIDE_BOTTOM_GAP = 20          -- below the button row
+local SIDE_H = FRAME_H - MARGIN - GAP - BTN_H - SIDE_BOTTOM_GAP
 local CONTENT_BOTTOM = SIDE_Y - SIDE_H            -- every block ends here
 
 -- The rectangle the dashboard, the summary and the scroll container share:
@@ -645,7 +665,7 @@ function MCA:DrawSidebar(root)
         {"Player","players"},
         {"Deaths","deaths"},
         {"Timeline","timeline"},
-        {"Confronto","compare"},
+        {"Compare","compare"},
         {"Storico","history"},
         {"Impostazioni","settings"}
     }
@@ -1520,6 +1540,41 @@ end
 -- who dies in the same place every time. The history already holds every
 -- attempt in full; this only lines them up side by side.
 -- ---------------------------------------------------------------------------
+-- What can be compared. Every one of these is already captured per player and
+-- readable — none of it is protected the way boss health turned out to be.
+--
+--   kind "rate"  : per-second figures, compared with a 5% deadband so ordinary
+--                  variance is not painted as a trend
+--   kind "count" : small integers, where any difference is the signal
+--
+-- `better` says which direction is good, so deaths colour the opposite way to
+-- everything else.
+local COMPARE_METRICS = {
+    {key = "dps",        label = "DPS",       kind = "rate",  better = 1,
+     get = function(self, p) return self:GetPlayerDPS(p) end},
+    {key = "damage",     label = "Danno",     kind = "rate",  better = 1,
+     get = function(self, p) return tonumber(p.blizzardDamageDone or p.damageDone) or 0 end},
+    {key = "hps",        label = "HPS",       kind = "rate",  better = 1,
+     get = function(self, p) return tonumber(p.blizzardHps or p.hps) or 0 end},
+    {key = "healing",    label = "Cure",      kind = "rate",  better = 1,
+     get = function(self, p) return tonumber(p.blizzardHealingDone or p.healingDone) or 0 end},
+    {key = "parse",      label = "Parse",     kind = "count", better = 1,
+     get = function(self, p) return tonumber(p.mcaRating) or 0 end},
+    {key = "deaths",     label = "Morti",     kind = "count", better = -1,
+     get = function(self, p) return tonumber(p.deaths) or 0 end},
+    {key = "defensives", label = "Difensive", kind = "count", better = 1,
+     get = function(self, p) return #(p.used or {}) end},
+    {key = "interrupts", label = "Interrupt", kind = "count", better = 1,
+     get = function(self, p) return tonumber(p.blizzardInterrupts) or 0 end},
+}
+
+function MCA:GetCompareMetric()
+    for _, m in ipairs(COMPARE_METRICS) do
+        if m.key == self.compareMetric then return m end
+    end
+    return COMPARE_METRICS[1]
+end
+
 -- Columns get narrow fast, so cap how many attempts render at once. Selecting
 -- more than this keeps the newest and says so rather than squeezing "156k +2"
 -- into 60 pixels.
@@ -1677,6 +1732,17 @@ function MCA:DrawComparePage(parent, data, y)
             end)
     end)
 
+    local metric = self:GetCompareMetric()
+    self:Text(parent, "Metrica:", "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300, self:UIColor("gray"))
+    y = chipGrid(self, parent, y - 28, COMPARE_METRICS, 104, function(m, point, w, h)
+        self:FilterButton(parent, m.label, point, w, h, m.key == metric.key,
+            function()
+                MCA.compareMetric = m.key
+                rebuild()
+            end)
+    end)
+
     self:Button(parent, "Deseleziona tutto",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 8}, 150, 24,
         function() MCA.compareSelection = {} rebuild() end)
@@ -1727,10 +1793,14 @@ function MCA:DrawComparePage(parent, data, y)
         end
     end
 
+    -- Ordered by the metric on show: sorting a healing comparison by damage
+    -- would bury the people it is about.
     local latest = attempts[1].players or {}
     table.sort(names, function(a, b)
-        local pa, pb = latest[a], latest[b]
-        return (pa and self:GetPlayerDPS(pa) or 0) > (pb and self:GetPlayerDPS(pb) or 0)
+        local va = latest[a] and metric.get(self, latest[a]) or 0
+        local vb = latest[b] and metric.get(self, latest[b]) or 0
+        if va == vb then return a < b end
+        return va > vb
     end)
 
     local rows = {}
@@ -1739,25 +1809,50 @@ function MCA:DrawComparePage(parent, data, y)
 
         for i, r in ipairs(attempts) do
             local p = (r.players or {})[name]
-            local dps = p and self:GetPlayerDPS(p) or 0
 
             local text, color = "-", self:UIColor("gray")
-            if p and dps > 0 then
-                -- attempts run newest-first, so the next index is the older one
-                local prev = attempts[i + 1] and (attempts[i + 1].players or {})[name]
-                local prevDps = prev and self:GetPlayerDPS(prev) or 0
-
-                color = self:UIColor("white")
-                if prevDps > 0 then
-                    -- 5% either way, so ordinary variance is not painted as a trend
-                    if dps > prevDps * 1.05 then color = self:UIColor("green")
-                    elseif dps < prevDps * 0.95 then color = self:UIColor("red") end
-                end
-
-                text = self:FormatMetricValue(dps)
-                if (p.deaths or 0) > 0 then text = text .. " +" .. p.deaths end
-            elseif not p then
+            if not p then
                 text = "assente"
+            else
+                local value = metric.get(self, p) or 0
+                local prev = attempts[i + 1] and (attempts[i + 1].players or {})[name]
+                local prevValue = prev and metric.get(self, prev) or nil
+
+                -- A rate of zero means the metric does not apply to this player
+                -- (a healer has no DPS worth showing), so it stays a dash rather
+                -- than a misleading 0 sitting at the bottom of the column.
+                if metric.kind == "rate" and value <= 0 then
+                    text = "-"
+                else
+                    color = self:UIColor("white")
+
+                    if prevValue then
+                        local up
+                        if metric.kind == "rate" then
+                            -- attempts run newest-first, so the next index is older
+                            if prevValue > 0 then
+                                if value > prevValue * 1.05 then up = true
+                                elseif value < prevValue * 0.95 then up = false end
+                            end
+                        elseif value ~= prevValue then
+                            up = value > prevValue
+                        end
+
+                        if up ~= nil then
+                            local good = (up and metric.better == 1) or (not up and metric.better == -1)
+                            color = good and self:UIColor("green") or self:UIColor("red")
+                        end
+                    end
+
+                    if metric.kind == "rate" then
+                        text = self:FormatMetricValue(value)
+                        -- A death explains a drop; without it the number invites
+                        -- the wrong conclusion.
+                        if (p.deaths or 0) > 0 then text = text .. " +" .. p.deaths end
+                    else
+                        text = tostring(math.floor(value))
+                    end
+                end
             end
 
             row[#row + 1] = {x = firstX + (i - 1) * colW, w = colW - 10,
@@ -1769,8 +1864,15 @@ function MCA:DrawComparePage(parent, data, y)
 
     y = self:DrawPageTable(parent, headers, rows, y)
 
-    local legend = "Verde/rosso = variazione oltre il 5% rispetto al tentativo precedente. "
-        .. "\"+N\" = morti. \"✖\" = wipe."
+    local legend
+    if metric.kind == "rate" then
+        legend = "Confronto su " .. metric.label .. ". Verde/rosso = variazione oltre il 5% "
+            .. "rispetto al tentativo precedente. \"+N\" = morti. \"✖\" = wipe."
+    else
+        legend = "Confronto su " .. metric.label .. ". Verde/rosso = qualunque variazione "
+            .. "rispetto al tentativo precedente"
+            .. (metric.better == -1 and " (meno e' meglio)" or "") .. ". \"✖\" = wipe."
+    end
     if dropped > 0 then
         legend = legend .. "  (" .. dropped .. " selezionati oltre i " .. COMPARE_MAX_COLUMNS
             .. " visualizzabili non sono mostrati.)"
@@ -1783,7 +1885,7 @@ end
 function MCA:DrawFullPage(root, data)
     local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, BODY_Y}, CONTENT_W, BODY_H, {0.018,0.020,0.022,0.65})
 
-    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", compare="Confronto", settings="Impostazioni"}
+    local titleMap = {summary="Riepilogo", players="Player", playerDetail="Player", deaths="Deaths", buffs="Buff Raid", interrupts="Interrupt", timeline="Timeline", history="Storico", compare="Compare", settings="Impostazioni"}
     local title = titleMap[self.activeTab] or "Riepilogo"
 
     -- Centred over the content rectangle rather than over the scroll child:
