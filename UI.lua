@@ -11,50 +11,95 @@ MCA = _G.MCA
 -- so the pieces cannot drift apart again: the window used to leave 8px on the
 -- left and 50 on the right because the content width was written out by hand.
 -- ---------------------------------------------------------------------------
--- Sized to the screen instead of fixed at 1320x780, so the lists get as much
--- room as the display allows and need less scrolling. Clamped at both ends:
--- never smaller than the layout was designed for, never so large it runs off
--- a big screen or becomes unwieldy.
-local FRAME_W, FRAME_H = 1320, 780
-do
+-- Sized as a share of the screen rather than to a fixed pixel cap. The cap was
+-- the bug: at a UI scale of 0.53 on a 2560-wide display UIParent is roughly
+-- 4800 units across, so an 1800-wide window covered barely a third of it and
+-- every table was cramped for no reason.
+--
+-- These are locals reassigned by computeLayout() instead of constants, so
+-- changing the size takes effect without a reload.
+local FRAME_W, FRAME_H
+local MARGIN, GAP, BTN_H = 8, 16, 34
+local SIDE_X, SIDE_Y, SIDE_W, SIDE_H, SIDE_BOTTOM_GAP
+local CONTENT_BOTTOM, CONTENT_X, CONTENT_W
+local DASH_Y, DASH_H, BODY_Y, BODY_H
+local PAGE_X, PAGE_W, PAGE_H, PAGE_PAD
+
+-- Column positions throughout are written against this width and scaled to
+-- whatever the page actually is. Widening the window used to add empty space
+-- on the right instead of room for the data, because every table but the
+-- comparison had its columns pinned to absolute pixels.
+local PAGE_REF_W = 1108
+
+local WINDOW_SHARE_DEFAULT = 0.78     -- of the screen, both axes
+local WINDOW_MIN_W, WINDOW_MIN_H = 1320, 780
+local WINDOW_MAX_W, WINDOW_MAX_H = 4200, 2800
+
+local function computeLayout()
     local uiW, uiH
     if UIParent and UIParent.GetSize then
         local ok, w, h = pcall(UIParent.GetSize, UIParent)
         if ok and type(w) == "number" and type(h) == "number" then uiW, uiH = w, h end
     end
 
-    if uiW and uiH and uiW > 0 and uiH > 0 then
-        FRAME_W = math.max(1320, math.min(1800, math.floor(uiW - 80)))
-        FRAME_H = math.max(780,  math.min(1050, math.floor(uiH - 60)))
+    local share = WINDOW_SHARE_DEFAULT
+    if RaidPulseDB and RaidPulseDB.config and tonumber(RaidPulseDB.config.windowShare) then
+        share = math.max(0.4, math.min(1.0, tonumber(RaidPulseDB.config.windowShare)))
     end
+
+    FRAME_W, FRAME_H = WINDOW_MIN_W, WINDOW_MIN_H
+    if uiW and uiH and uiW > 0 and uiH > 0 then
+        FRAME_W = math.floor(math.max(WINDOW_MIN_W, math.min(WINDOW_MAX_W, uiW * share)))
+        FRAME_H = math.floor(math.max(WINDOW_MIN_H, math.min(WINDOW_MAX_H, uiH * share)))
+    end
+
+    SIDE_X, SIDE_Y = MARGIN, -MARGIN
+    SIDE_W = 138
+    SIDE_BOTTOM_GAP = 20                -- below the button row
+    -- The sidebar spans everything above the button row, so it follows the
+    -- frame height rather than being pinned to a value that suited one size.
+    SIDE_H = FRAME_H - MARGIN - GAP - BTN_H - SIDE_BOTTOM_GAP
+    CONTENT_BOTTOM = SIDE_Y - SIDE_H     -- every block ends here
+
+    -- The rectangle the dashboard, the summary and the scroll container share:
+    -- one gap right of the sidebar, the same margin on the right as the left.
+    CONTENT_X = SIDE_X + SIDE_W + GAP
+    CONTENT_W = FRAME_W - MARGIN - CONTENT_X
+
+    DASH_Y, DASH_H = -36, 64             -- the KPI strip under the title
+    BODY_Y = DASH_Y - DASH_H - GAP       -- top of everything below it
+    BODY_H = math.abs(CONTENT_BOTTOM) - math.abs(BODY_Y)
+
+    -- Margins *inside* the scroll: Scroll() insets its child by 4 and sizes it
+    -- to CONTENT_W - 10, and the scrollbar sits over the right edge of that.
+    PAGE_X, PAGE_PAD = 8, 8
+    PAGE_W = CONTENT_W - 10 - PAGE_X - 24
+    PAGE_H = 430                         -- for the tabs that still use a panel
 end
-local MARGIN = 8            -- same on the left, the right and the top
-local GAP = 16              -- between blocks, on both axes
-local BTN_H = 34
 
-local SIDE_X, SIDE_Y = MARGIN, -MARGIN
--- The sidebar spans everything above the button row, so it has to be derived
--- from the frame height rather than pinned at the 702 that suited 780.
-local SIDE_W = 138
-local SIDE_BOTTOM_GAP = 20          -- below the button row
-local SIDE_H = FRAME_H - MARGIN - GAP - BTN_H - SIDE_BOTTOM_GAP
-local CONTENT_BOTTOM = SIDE_Y - SIDE_H            -- every block ends here
+computeLayout()
 
--- The rectangle the dashboard, the summary and the scroll container share:
--- one gap right of the sidebar, and the same margin on the right as the left.
-local CONTENT_X = SIDE_X + SIDE_W + GAP
-local CONTENT_W = FRAME_W - MARGIN - CONTENT_X
+-- computeLayout() runs when this file loads, before saved variables exist, so
+-- it falls back to the default share. Called again once the DB is up to pick
+-- up a stored size.
+function MCA:RefreshLayout()
+    computeLayout()
+    if _G.MCAFrame then _G.MCAFrame:SetSize(FRAME_W, FRAME_H) end
+end
 
-local DASH_Y, DASH_H = -36, 64                    -- the KPI strip under the title
-local BODY_Y = DASH_Y - DASH_H - GAP              -- top of everything below it
-local BODY_H = math.abs(CONTENT_BOTTOM) - math.abs(BODY_Y)
+-- Resize without a reload. The frame is resized rather than destroyed: it is
+-- created once and kept on purpose, and orphaning it would leak exactly what
+-- the widget pool exists to avoid. Its contents come from the pool and are
+-- redrawn at the new measurements anyway.
+function MCA:SetWindowShare(share)
+    RaidPulseDB.config = RaidPulseDB.config or {}
+    RaidPulseDB.config.windowShare = math.max(0.4, math.min(1.0, tonumber(share) or WINDOW_SHARE_DEFAULT))
 
--- Margins *inside* the scroll: Scroll() insets its child by 4 and sizes it to
--- CONTENT_W - 10, and the scrollbar sits over the right edge of that.
-local PAGE_X = 8
-local PAGE_W = CONTENT_W - 10 - PAGE_X - 24
-local PAGE_H = 430          -- panel height for the tabs that still use one
-local PAGE_PAD = 8          -- inner padding for text drawn straight onto the page
+    self:RefreshLayout()
+    self:Print(string.format("Finestra al %d%% dello schermo (%dx%d unita').",
+        math.floor(RaidPulseDB.config.windowShare * 100 + 0.5), FRAME_W, FRAME_H))
+    self:BuildDashboard(self:GetLastAvailableReport())
+end
 
 MCA.ClassIconCoords = {
     WARRIOR={0,0.25,0,0.25}, MAGE={0.25,0.5,0,0.25}, ROGUE={0.5,0.75,0,0.25}, DRUID={0.75,1,0,0.25},
@@ -1415,18 +1460,22 @@ function MCA:DrawHistoryPage(parent)
         MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end, true)
 
+    -- Same scaling the shared table renderer applies, so the history stretches
+    -- with the window instead of huddling on the left of a wide page.
+    local k = self:ColScale()
+
     local header = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     header:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, -92)
     header:SetSize(PAGE_W, 28)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
 
-    self:Text(header, "Data", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 10, 0}, 120, self:UIColor("white"))
-    self:Text(header, "Tipo", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 145, 0}, 70, self:UIColor("white"))
-    self:Text(header, "Encounter / Dungeon", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 230, 0}, 260, self:UIColor("white"))
-    self:Text(header, "Modalità", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 510, 0}, 130, self:UIColor("white"))
-    self:Text(header, "Durata", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 660, 0}, 70, self:UIColor("white"))
-    self:Text(header, "Esito", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 750, 0}, 70, self:UIColor("white"))
-    self:Text(header, "Avg DPS", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840, 0}, 70, self:UIColor("white"))
+    self:Text(header, "Data", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 10 * k, 0}, 120 * k, self:UIColor("white"))
+    self:Text(header, "Tipo", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 145 * k, 0}, 70 * k, self:UIColor("white"))
+    self:Text(header, "Encounter / Dungeon", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 230 * k, 0}, 260 * k, self:UIColor("white"))
+    self:Text(header, "Modalità", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 510 * k, 0}, 130 * k, self:UIColor("white"))
+    self:Text(header, "Durata", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 660 * k, 0}, 70 * k, self:UIColor("white"))
+    self:Text(header, "Esito", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 750 * k, 0}, 70 * k, self:UIColor("white"))
+    self:Text(header, "Avg DPS", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 840 * k, 0}, 70 * k, self:UIColor("white"))
 
     local y = -124
     local rowIndex = 0
@@ -1451,13 +1500,13 @@ function MCA:DrawHistoryPage(parent)
 
         local resultText = isKill and "Kill" or "Wipe"
 
-        self:Text(row, report.savedAt or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 10, 0}, 120, self:UIColor("gray"))
-        self:Text(row, report.type or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 145, 0}, 70, self:UIColor("accent"))
-        self:Text(row, report.boss or "?", "GameFontNormal", {"LEFT", row, "LEFT", 230, 0}, 260, self:UIColor("white"))
-        self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510, 0}, 130, self:GetDifficultyColor(report.difficulty))
-        self:Text(row, self:FormatTime(report.duration or 0), "GameFontNormalSmall", {"LEFT", row, "LEFT", 660, 0}, 70, self:UIColor("white"))
-        self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750, 0}, 70, isKill and self:UIColor("green") or self:UIColor("red"))
-        self:Text(row, self:FormatMetricValue(self:ComputeAverageDPS(report)), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840, 0}, 70, self:UIColor("accent"))
+        self:Text(row, report.savedAt or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 10 * k, 0}, 120 * k, self:UIColor("gray"))
+        self:Text(row, report.type or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 145 * k, 0}, 70 * k, self:UIColor("accent"))
+        self:Text(row, report.boss or "?", "GameFontNormal", {"LEFT", row, "LEFT", 230 * k, 0}, 260 * k, self:UIColor("white"))
+        self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510 * k, 0}, 130 * k, self:GetDifficultyColor(report.difficulty))
+        self:Text(row, self:FormatTime(report.duration or 0), "GameFontNormalSmall", {"LEFT", row, "LEFT", 660 * k, 0}, 70 * k, self:UIColor("white"))
+        self:Text(row, resultText, "GameFontNormalSmall", {"LEFT", row, "LEFT", 750 * k, 0}, 70 * k, isKill and self:UIColor("green") or self:UIColor("red"))
+        self:Text(row, self:FormatMetricValue(self:ComputeAverageDPS(report)), "GameFontNormalSmall", {"LEFT", row, "LEFT", 840 * k, 0}, 70 * k, self:UIColor("accent"))
 
         self:Button(row, "Apri", {"RIGHT", row, "RIGHT", -84, 0}, 64, 22, function()
             MCA.activeTab = "summary"
@@ -1497,7 +1546,14 @@ end
 -- Row geometry matches the history exactly (28px header, 30px rows on a 32px
 -- pitch) so the tabs are indistinguishable apart from their columns. Returns
 -- the y below the last row, so the caller keeps growing the page scroll.
+-- How much to stretch column positions written against PAGE_REF_W. Never
+-- squeezes below the reference: a narrow window scrolls rather than overlaps.
+function MCA:ColScale()
+    return math.max(1, PAGE_W / PAGE_REF_W)
+end
+
 function MCA:DrawPageTable(parent, headers, rows, y)
+    local k = self:ColScale()
     local header = self:AcquireFrame("Frame", parent, "BackdropTemplate")
     header:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
     header:SetSize(PAGE_W, 28)
@@ -1505,7 +1561,7 @@ function MCA:DrawPageTable(parent, headers, rows, y)
 
     for _, c in ipairs(headers or {}) do
         self:Text(header, c.label, "GameFontHighlightSmall",
-            {"LEFT", header, "LEFT", c.x, 0}, c.w, self:UIColor("white"), c.justify)
+            {"LEFT", header, "LEFT", c.x * k, 0}, c.w * k, self:UIColor("white"), c.justify)
     end
 
     y = y - 32
@@ -1537,15 +1593,15 @@ function MCA:DrawPageTable(parent, headers, rows, y)
         for _, cell in ipairs(rowData) do
             local iconW = 0
             if cell.spellID then
-                self:SpellIcon(row, cell.spellID, cell.x, -6, 18)
+                self:SpellIcon(row, cell.spellID, cell.x * k, -6, 18)
                 iconW = 25
             elseif cell.classIcon then
-                self:ClassIcon(row, cell.classIcon, cell.x, -6, 18)
+                self:ClassIcon(row, cell.classIcon, cell.x * k, -6, 18)
                 iconW = 24
             end
 
             self:Text(row, cell.text or "", cell.font or "GameFontNormalSmall",
-                {"LEFT", row, "LEFT", cell.x + iconW, 0}, (cell.w or 80) - iconW,
+                {"LEFT", row, "LEFT", cell.x * k + iconW, 0}, (cell.w or 80) * k - iconW,
                 cell.color or self:UIColor("white"), cell.justify or "LEFT")
         end
 
@@ -1836,7 +1892,7 @@ function MCA:DrawComparePage(parent, data, y)
 
     local nameCol = {x = 10, w = 210}
     local firstX = 230
-    local colW = math.max(90, math.floor((PAGE_W - firstX) / #attempts))
+    local colW = math.max(90, math.floor((PAGE_REF_W - firstX) / #attempts))
 
     local headers = {{label = "Player", x = nameCol.x, w = nameCol.w}}
     for i, r in ipairs(attempts) do

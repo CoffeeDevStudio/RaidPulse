@@ -122,6 +122,12 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         MCA:ShowExportWindow(MCA.lastReport)
     elseif msg == "share" then
         MCA:ShareSummary(MCA.lastReport)
+    elseif msg:match("^size%s+%d+$") then
+        -- Percentage of the screen, so it means the same thing at any UI scale.
+        local pct = tonumber(msg:match("(%d+)"))
+        if MCA.SetWindowShare then MCA:SetWindowShare(pct / 100) end
+    elseif msg == "size" then
+        MCA:Print("Uso: /rp size <40-100>  (percentuale dello schermo)")
     elseif msg == "meter" then
         if MCA.ReportDamageMeterState then MCA:ReportDamageMeterState() end
     elseif msg == "pool" then
@@ -164,6 +170,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             end
         end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher, /rp pool, /rp meter")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp watcher, /rp pool, /rp meter, /rp size <40-100>")
     end
 end

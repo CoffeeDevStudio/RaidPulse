@@ -72,6 +72,9 @@ end)
 function MCA:ADDON_LOADED(addonName)
     if addonName ~= "RaidPulse" then return end
     self:InitDB()
+    -- The layout is computed when UI.lua loads, before saved variables exist,
+    -- so a stored window size is only picked up here.
+    if self.RefreshLayout then self:RefreshLayout() end
 end
 
 function MCA:PLAYER_LOGIN()
