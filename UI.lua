@@ -498,13 +498,18 @@ function MCA:StatusForScore(score)
     return "Critico", self:UIColor("red")
 end
 
--- Tank blue, healer green, damage orange: the convention the game itself uses
--- in the group finder, so it needs no legend.
-function MCA:GetRoleColor(role)
-    role = tostring(role or "DAMAGER"):upper()
-    if role == "TANK" then return self:UIColor("blue") end
-    if role == "HEALER" then return self:UIColor("green") end
-    return self:UIColor("orange")
+-- Class colours, the convention every WoW UI shares.
+--
+-- CUSTOM_CLASS_COLORS is checked first: unit-frame addons set it when the
+-- player has chosen their own palette, and matching what the rest of their UI
+-- already shows matters more than matching Blizzard's defaults.
+function MCA:GetClassColor(class)
+    local token = tostring(class or ""):upper()
+    local c = (_G.CUSTOM_CLASS_COLORS and _G.CUSTOM_CLASS_COLORS[token])
+           or (_G.RAID_CLASS_COLORS and _G.RAID_CLASS_COLORS[token])
+
+    if c and c.r then return {c.r, c.g, c.b, 1} end
+    return self:UIColor("white")
 end
 
 function MCA:RoleShort(role)
@@ -1863,12 +1868,11 @@ function MCA:DrawComparePage(parent, data, y)
         return va > vb
     end)
 
-    -- Role comes from the most recent attempt a player appears in, so someone
-    -- who swapped spec mid-night shows as whatever they last were.
-    local roleOf = {}
+    -- Class comes from the most recent attempt a player appears in.
+    local classOf = {}
     for i = #attempts, 1, -1 do
         for _, p in pairs(attempts[i].players or {}) do
-            if p.name then roleOf[p.name] = p.role end
+            if p.name then classOf[p.name] = p.class end
         end
     end
 
@@ -1877,7 +1881,7 @@ function MCA:DrawComparePage(parent, data, y)
     local rows = {}
     for _, name in ipairs(names) do
         local row = {{x = nameCol.x, w = nameCol.w, text = name, font = "GameFontNormal",
-                      color = self:GetRoleColor(roleOf[name])}}
+                      color = self:GetClassColor(classOf[name])}}
         row.highlight = (name == myName)
 
         for i, r in ipairs(attempts) do
