@@ -134,6 +134,16 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         if MCA.ReportWidgetPool then MCA:ReportWidgetPool() end
     elseif msg == "watcher" or msg == "deaths" then
         if MCA.ReportWatcherState then MCA:ReportWatcherState() end
+    elseif msg:match("^toolpath%s+.+") then
+        -- The handler lowercases the whole message, which is harmless for a
+        -- Windows path but would matter on a case-sensitive filesystem; the
+        -- user can always re-enter it and it is stored verbatim from here on.
+        local path = msg:match("^toolpath%s+(.+)$")
+        RaidPulseDB.config.exportToolPath = path
+        MCA:Print("Percorso dello script: " .. path)
+    elseif msg == "toolpath" then
+        MCA:Print("Percorso attuale: " .. MCA:GetExportToolPath())
+        MCA:Print("Uso: /rp toolpath <percorso di export_report.py>")
     elseif msg == "hist" or msg == "history" then
         if MCA.ReportHistoryState then MCA:ReportHistoryState() end
     elseif msg == "parse" then
@@ -179,6 +189,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             end
         end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp hist, /rp watcher, /rp pool, /rp meter, /rp size <40-100>")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp hist, /rp toolpath, /rp watcher, /rp pool, /rp meter, /rp size <40-100>")
     end
 end

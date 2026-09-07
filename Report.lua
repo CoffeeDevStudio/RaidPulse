@@ -73,8 +73,139 @@ function MCA:GetExportText(data)
     return table.concat(lines, "\n")
 end
 
+-- Where tools/export_report.py lives. Relative by default, which works when
+-- the command is run from the _retail_ folder; an addon cannot read its own
+-- absolute path, so /rp toolpath stores one for anyone who would rather run
+-- it from elsewhere.
+local DEFAULT_TOOL_PATH = "Interface" .. string.char(92) .. "AddOns"
+    .. string.char(92) .. "RaidPulse" .. string.char(92) .. "tools"
+    .. string.char(92) .. "export_report.py"
+
+function MCA:GetExportToolPath()
+    local stored = RaidPulseDB and RaidPulseDB.config
+        and RaidPulseDB.config.exportToolPath
+    if type(stored) == "string" and stored ~= "" then return stored end
+    return DEFAULT_TOOL_PATH
+end
+
+-- What --only should be given for this report, matching how the page groups
+-- fights: a raid night is addressed by its group, a dungeon by its name,
+-- because every run of it is a different group.
+function MCA:GetExportSelector(data)
+    if not data then return nil end
+    if (data.type or "") == "M+" then return data.boss end
+    return data.groupID
+end
+
+-- Plain double quotes, not string.format("%q"): that escapes for Lua source
+-- and would hand back a path with every separator doubled, which no shell
+-- wants. Windows paths and boss names cannot contain a double quote.
+local function shellQuote(text)
+    return '"' .. tostring(text) .. '"'
+end
+
+function MCA:GetExportCommand(data)
+    data = data or self.lastReport
+
+    local selector = self:GetExportSelector(data)
+    local command = "python " .. shellQuote(self:GetExportToolPath())
+
+    if selector and selector ~= "" then
+        command = command .. " --only " .. shellQuote(selector)
+    end
+
+    return command
+end
+
+-- A read-only box rather than a Print: a command line has to be copied, and
+-- chat text cannot be selected. The frame is built once and kept.
 function MCA:ShowExportWindow(data)
-    self:Print(self:GetExportText(data or self.lastReport))
+    data = data or self.lastReport
+
+    local f = _G.RaidPulseExportFrame
+    if not f then
+        f = CreateFrame("Frame", "RaidPulseExportFrame", UIParent, "BackdropTemplate")
+        f:SetSize(700, 320)
+        f:SetPoint("CENTER")
+        f:SetFrameStrata("FULLSCREEN_DIALOG")
+        f:EnableMouse(true)
+        f:SetMovable(true)
+        f:RegisterForDrag("LeftButton")
+        f:SetScript("OnDragStart", f.StartMoving)
+        f:SetScript("OnDragStop", f.StopMovingOrSizing)
+        self:SetBackdropSolid(f, self:UIColor("bg"), {0.28,0.28,0.30,1})
+
+        if UISpecialFrames then
+            table.insert(UISpecialFrames, "RaidPulseExportFrame")
+        end
+
+        f.title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+        f.title:SetPoint("TOP", 0, -12)
+
+        f.hint = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        f.hint:SetPoint("TOPLEFT", 16, -40)
+        f.hint:SetWidth(668)
+        f.hint:SetJustifyH("LEFT")
+
+        -- Single line, selected on open, so ctrl+C is the only thing left to do.
+        f.cmd = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+        f.cmd:SetPoint("TOPLEFT", 20, -78)
+        f.cmd:SetSize(660, 22)
+        f.cmd:SetAutoFocus(false)
+        f.cmd:SetFontObject("GameFontHighlightSmall")
+        f.cmd:SetScript("OnEscapePressed", function() f:Hide() end)
+        -- Read-only in effect: typing is undone rather than blocked, which
+        -- keeps ctrl+C and ctrl+A working.
+        f.cmd:SetScript("OnTextChanged", function(box, user)
+            if user then box:SetText(box.rpText or "") box:HighlightText() end
+        end)
+
+        f.sub = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        f.sub:SetPoint("TOPLEFT", 16, -112)
+        f.sub:SetText("Riepilogo testuale")
+
+        local scroll = CreateFrame("ScrollFrame", "RaidPulseExportScroll", f,
+            "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 20, -132)
+        scroll:SetPoint("BOTTOMRIGHT", -34, 46)
+
+        f.text = CreateFrame("EditBox", nil, scroll)
+        f.text:SetMultiLine(true)
+        f.text:SetAutoFocus(false)
+        f.text:SetFontObject("GameFontHighlightSmall")
+        f.text:SetWidth(620)
+        f.text:SetScript("OnEscapePressed", function() f:Hide() end)
+        scroll:SetScrollChild(f.text)
+
+        local close = CreateFrame("Button", nil, f, "BackdropTemplate")
+        close:SetPoint("BOTTOMRIGHT", -16, 14)
+        close:SetSize(110, 24)
+        self:SetBackdropSolid(close, {0.06,0.055,0.025,0.88}, {0.45,0.35,0.02,1})
+        local label = close:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        label:SetPoint("CENTER")
+        label:SetText("Chiudi")
+        label:SetTextColor(1, 0.82, 0)
+        close:SetScript("OnClick", function() f:Hide() end)
+    end
+
+    local command = self:GetExportCommand(data)
+    f.cmd.rpText = command
+    f.cmd:SetText(command)
+
+    local selector = self:GetExportSelector(data)
+    f.title:SetText("Esporta " .. tostring((data and data.boss) or "report"))
+    f.hint:SetText(selector
+        and ("Comando per generare la pagina di questo "
+            .. (((data.type or "") == "M+") and "dungeon" or "gruppo raid")
+            .. ". Copialo con ctrl+C ed eseguilo dalla cartella _retail_.")
+        or "Comando per generare la pagina con tutto lo storico. Copialo con ctrl+C.")
+
+    f.text:SetText(self:GetExportText(data))
+    f.text:ClearFocus()
+
+    f:Show()
+    f.cmd:SetFocus()
+    f.cmd:HighlightText()
 end
 
 -- Which chat channel "Share in chat" should post to.

@@ -16,12 +16,15 @@ old that file is.
 """
 
 import argparse
+import base64
 import datetime as dt
 import glob
 import html
 import os
 import re
+import struct
 import sys
+import zlib
 
 # ---------------------------------------------------------------------------
 # Reading the SavedVariables
@@ -149,6 +152,74 @@ def as_list(table):
         return []
     keys = [k for k in table if isinstance(k, int)]
     return [table[k] for k in sorted(keys)]
+
+
+def _png(width, height, rgba):
+    """A minimal PNG writer. The icon ships as an uncompressed TGA, which no
+    browser reads, and pulling in an imaging library for one 128px logo is not
+    worth it."""
+    raw = bytearray()
+    stride = width * 4
+    for y in range(height):
+        raw.append(0)                       # filter: none
+        raw += rgba[y * stride:(y + 1) * stride]
+
+    def chunk(tag, payload):
+        body = tag + payload
+        return (struct.pack(">I", len(payload)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + chunk(b"IEND", b""))
+
+
+def icon_data_uri():
+    """The addon icon as a data URI, or None if it cannot be read.
+
+    Only uncompressed true-colour TGA is handled, which is what the addon
+    ships; anything else falls back to the drawn mark.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "Textures", "icon.tga")
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+
+    if len(data) < 18 or data[2] != 2 or data[16] != 32:
+        return None
+
+    width, height = struct.unpack("<HH", data[12:16])
+    start = 18 + data[0]
+    pixels = data[start:start + width * height * 4]
+    if len(pixels) < width * height * 4:
+        return None
+
+    # TGA stores BGRA, and bottom-up unless bit 5 of the descriptor says
+    # otherwise.
+    rgba = bytearray(len(pixels))
+    for i in range(0, len(pixels), 4):
+        b, g, r, a = pixels[i:i + 4]
+        rgba[i:i + 4] = bytes((r, g, b, a))
+
+    if not (data[17] & 0x20):
+        stride = width * 4
+        rows = [rgba[y * stride:(y + 1) * stride] for y in range(height)]
+        rgba = bytearray(b"".join(reversed(rows)))
+
+    return "data:image/png;base64," + base64.b64encode(
+        _png(width, height, rgba)).decode("ascii")
+
+
+FALLBACK_MARK = (
+    '<svg viewBox="0 0 64 64" class="mark" role="img" aria-label="RaidPulse">'
+    '<circle cx="32" cy="32" r="30" fill="#1b1030" stroke="#a855f7" stroke-width="2"/>'
+    '<path d="M10 32h10l5-12 7 24 6-16 5 8h11" fill="none" stroke="#c084fc"'
+    ' stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/></svg>'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +669,10 @@ CSS = """
 * { box-sizing: border-box; }
 body { margin:0; background:#101114; color:#e6e6e6;
        font:14px/1.45 "Segoe UI",system-ui,sans-serif; }
-header { padding:20px 28px; border-bottom:1px solid #2a2c31; background:#16171b; }
+header { padding:18px 28px; border-bottom:1px solid #2a2c31; background:#16171b;
+         display:flex; align-items:center; gap:16px; }
+.mark { width:46px; height:46px; flex:0 0 46px; border-radius:50%; display:block; }
+header .titles { min-width:0; }
 h1 { margin:0 0 4px; font-size:20px; color:#ffd100; font-weight:600; }
 .sub { color:#8b8f96; font-size:12px; }
 main { padding:20px 28px 60px; }
@@ -652,7 +726,10 @@ def render(db, sv_path, containers, total_sections=None, filter_note=""):
            "<meta name='viewport' content='width=device-width,initial-scale=1'>",
            "<title>RaidPulse — report</title><style>%s</style></head><body>" % CSS]
 
-    out.append("<header><h1>RaidPulse — report</h1>")
+    icon = icon_data_uri()
+    mark = ('<img class="mark" src="%s" alt="RaidPulse">' % icon) if icon else FALLBACK_MARK
+
+    out.append("<header>%s<div class='titles'><h1>RaidPulse — report</h1>" % mark)
     scope = "%d sezioni, %d tentativi" % (len(containers), shown)
     if total_sections and total_sections != len(containers):
         scope += (" (di %d sezioni e %d tentativi nello storico)"
@@ -660,11 +737,16 @@ def render(db, sv_path, containers, total_sections=None, filter_note=""):
     out.append("<div class='sub'>%s &middot; generato %s%s</div>" %
                (scope, dt.datetime.now().strftime("%d/%m/%Y %H:%M"),
                 filter_note))
-    out.append("<div class='sub'>Origine: %s &middot; scritto %s%s</div>" % (
-        esc(sv_path), mtime.strftime("%d/%m/%Y %H:%M"),
-        (" <span class='warn'>(%d ore fa: fai /reload per aggiornarlo)</span>"
-         % (age.total_seconds() // 3600)) if age.total_seconds() > 3600 else ""))
-    out.append("</header><main>")
+    # No path: the page gets sent to other people and where the file sat on
+    # one machine is noise to them. When the data is stale that still has to be
+    # said, because the newest pull is only in it after a reload.
+    stale = ""
+    if age.total_seconds() > 3600:
+        stale = (" <span class='warn'>&middot; %d ore fa: fai /reload e rigenera</span>"
+                 % (age.total_seconds() // 3600))
+    out.append("<div class='sub'>Dati al %s%s</div>"
+               % (mtime.strftime("%d/%m/%Y %H:%M"), stale))
+    out.append("</div></header><main>")
 
     if not containers:
         out.append("<p>Nessun report nello storico.</p>")
