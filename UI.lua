@@ -1615,7 +1615,7 @@ function MCA:GetComparableFights()
             -- Reports saved before groups were tracked share one legacy bucket
             -- rather than each becoming an uncomparable island.
             local groupID = r.groupID or "legacy"
-            local key = r.boss .. " " .. groupID
+            local key = r.boss .. "||" .. groupID
 
             local entry = byKey[key]
             if not entry then
@@ -1654,6 +1654,22 @@ function MCA:GetComparableFights()
     return out
 end
 
+-- Every saved attempt on one fight, for one group, newest first.
+function MCA:GetComparisonCandidates(boss, groupID)
+    if not boss or boss == "" then return {} end
+
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    local out = {}
+    for i = #history, 1, -1 do
+        local r = history[i]
+        if r and r.boss == boss and r.historyID
+           and (r.groupID or "legacy") == (groupID or "legacy") then
+            out[#out + 1] = r
+        end
+    end
+    return out
+end
+
 -- Which fight the tab is showing. Prefers an explicit pick, then the open
 -- report's own fight, then whatever was played most recently — so opening the
 -- tab always lands on something rather than on an empty page.
@@ -1665,7 +1681,7 @@ function MCA:GetCompareFight(fights, data)
     -- The open report's own fight, matched on its group too so it does not
     -- land on the same boss played with someone else.
     if data and data.boss then
-        local wanted = data.boss .. " " .. (data.groupID or "legacy")
+        local wanted = data.boss .. "||" .. (data.groupID or "legacy")
         for _, f in ipairs(fights) do
             if f.key == wanted then
                 self.compareFightKey = f.key
