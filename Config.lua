@@ -120,6 +120,8 @@ SlashCmdList["RAIDPULSE"] = function(msg)
         MCA:Print("debug OFF")
     elseif msg == "export" then
         MCA:ShowExportWindow(MCA.lastReport)
+    elseif msg == "text" then
+        MCA:Print(MCA:GetExportText(MCA:GetLastAvailableReport()))
     elseif msg == "share" then
         MCA:ShareSummary(MCA.lastReport)
     elseif msg:match("^size%s+%d+$") then
@@ -189,6 +191,6 @@ SlashCmdList["RAIDPULSE"] = function(msg)
             end
         end
     else
-        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp share, /rp buffs, /rp parse, /rp hist, /rp toolpath, /rp watcher, /rp pool, /rp meter, /rp size <40-100>")
+        MCA:Print("Commands: /rp test, /rp show, /rp minimap, /rp debug on/off, /rp export, /rp text, /rp share, /rp buffs, /rp parse, /rp hist, /rp toolpath, /rp watcher, /rp pool, /rp meter, /rp size <40-100>")
     end
 end

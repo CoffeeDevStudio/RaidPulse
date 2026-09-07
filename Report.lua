@@ -88,15 +88,6 @@ function MCA:GetExportToolPath()
     return DEFAULT_TOOL_PATH
 end
 
--- What --only should be given for this report, matching how the page groups
--- fights: a raid night is addressed by its group, a dungeon by its name,
--- because every run of it is a different group.
-function MCA:GetExportSelector(data)
-    if not data then return nil end
-    if (data.type or "") == "M+" then return data.boss end
-    return data.groupID
-end
-
 -- Plain double quotes, not string.format("%q"): that escapes for Lua source
 -- and would hand back a path with every separator doubled, which no shell
 -- wants. Windows paths and boss names cannot contain a double quote.
@@ -104,28 +95,120 @@ local function shellQuote(text)
     return '"' .. tostring(text) .. '"'
 end
 
-function MCA:GetExportCommand(data)
-    data = data or self.lastReport
-
-    local selector = self:GetExportSelector(data)
+-- `selector` is what --only receives: a raid night's group id, or a dungeon's
+-- name. GetExportGroups hands one out per row of the picker.
+function MCA:GetExportCommand(selector)
     local command = "python " .. shellQuote(self:GetExportToolPath())
-
     if selector and selector ~= "" then
         command = command .. " --only " .. shellQuote(selector)
     end
-
     return command
 end
 
--- A read-only box rather than a Print: a command line has to be copied, and
--- chat text cannot be selected. The frame is built once and kept.
+-- A picker, not a printout.
+--
+-- This used to export whatever report was open, which is the one case that
+-- does not need a window: the point of the page is post-raid, when the night
+-- is over and you want that night and not the pull still on screen. It now
+-- lists every raid night and dungeon in the history and builds the command
+-- for the one selected.
+--
+-- The command lives in an edit box because a command line has to be copied,
+-- and chat text cannot be selected.
+
+local EXPORT_ROW_H = 22
+
+local function exportRow(f, index)
+    local row = f.rows[index]
+    if row then return row end
+
+    row = CreateFrame("Button", nil, f.listChild, "BackdropTemplate")
+    row:SetPoint("TOPLEFT", 0, -(index - 1) * (EXPORT_ROW_H + 2))
+    row:SetSize(620, EXPORT_ROW_H)
+
+    row.text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    row.text:SetPoint("LEFT", 8, 0)
+    row.text:SetWidth(600)
+    row.text:SetJustifyH("LEFT")
+
+    f.rows[index] = row
+    return row
+end
+
+function MCA:RefreshExportWindow()
+    local f = _G.RaidPulseExportFrame
+    if not f or not f:IsShown() then return end
+
+    local groups = self:GetExportGroups()
+
+    -- A selection left over from a group since deleted must not leave the
+    -- window pointing at nothing.
+    local chosen
+    for _, entry in ipairs(groups) do
+        if entry.key == self.exportSelection then chosen = entry end
+    end
+    chosen = chosen or groups[1]
+    self.exportSelection = chosen and chosen.key or nil
+
+    for index, entry in ipairs(groups) do
+        local row = exportRow(f, index)
+        local active = chosen and entry.key == chosen.key
+
+        self:SetBackdropSolid(row,
+            active and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
+            active and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
+
+        local kills = ""
+        if entry.kind ~= "M+" then
+            kills = string.format("  %d kill / %d wipe", entry.kills,
+                entry.count - entry.kills)
+        end
+
+        row.text:SetText(string.format("|cff%s%s|r  %s  |cff9aa0a8%d %s%s - %d player|r",
+            active and "ffd100" or "e6e6e6",
+            entry.stamp, entry.label, entry.count,
+            entry.kind == "M+" and "run" or "tentativi", kills, entry.playerCount))
+
+        row:SetScript("OnClick", function()
+            MCA.exportSelection = entry.key
+            MCA:RefreshExportWindow()
+        end)
+        row:Show()
+    end
+
+    for index = #groups + 1, #f.rows do f.rows[index]:Hide() end
+    f.listChild:SetHeight(math.max(1, #groups * (EXPORT_ROW_H + 2)))
+
+    if not chosen then
+        f.cmd.rpText = ""
+        f.cmd:SetText("")
+        f.hint:SetText("Nessun gruppo nello storico da esportare.")
+        return
+    end
+
+    local command = self:GetExportCommand(chosen.selector)
+    f.cmd.rpText = command
+    f.cmd:SetText(command)
+    f.cmd:SetFocus()
+    f.cmd:HighlightText()
+
+    -- Two conditions the command depends on, neither of them obvious: the data
+    -- has to be on disk, and a relative path only resolves from one folder.
+    local stored = RaidPulseDB.config and RaidPulseDB.config.exportToolPath
+    f.hint:SetText("Selezionato: " .. chosen.stamp .. " - " .. chosen.label
+        .. ".  Le SavedVariables si scrivono al /reload: un tentativo appena "
+        .. "finito non e' ancora su disco."
+        .. (stored and "" or "  Esegui dalla cartella _retail_, oppure lancia lo "
+            .. "script una volta: stampa un /rp toolpath che toglie il vincolo."))
+end
+
 function MCA:ShowExportWindow(data)
     data = data or self.lastReport
 
     local f = _G.RaidPulseExportFrame
     if not f then
         f = CreateFrame("Frame", "RaidPulseExportFrame", UIParent, "BackdropTemplate")
-        f:SetSize(700, 320)
+        f:SetSize(700, 420)
         f:SetPoint("CENTER")
         f:SetFrameStrata("FULLSCREEN_DIALOG")
         f:EnableMouse(true)
@@ -139,18 +222,34 @@ function MCA:ShowExportWindow(data)
             table.insert(UISpecialFrames, "RaidPulseExportFrame")
         end
 
+        f.rows = {}
+
         f.title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
         f.title:SetPoint("TOP", 0, -12)
+        f.title:SetText("Esporta pagina web")
+
+        f.sub = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        f.sub:SetPoint("TOPLEFT", 16, -40)
+        f.sub:SetText("Scegli la serata di raid o la dungeon da esportare:")
+
+        local scroll = CreateFrame("ScrollFrame", "RaidPulseExportScroll", f,
+            "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 20, -60)
+        scroll:SetSize(640, 218)
+
+        f.listChild = CreateFrame("Frame", nil, scroll)
+        f.listChild:SetSize(620, 1)
+        scroll:SetScrollChild(f.listChild)
 
         f.hint = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f.hint:SetPoint("TOPLEFT", 16, -40)
+        f.hint:SetPoint("TOPLEFT", 16, -288)
         f.hint:SetWidth(668)
         f.hint:SetJustifyH("LEFT")
+        f.hint:SetTextColor(0.68, 0.68, 0.68)
 
-        -- Single line, selected on open, so ctrl+C is the only thing left to do.
         f.cmd = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-        f.cmd:SetPoint("TOPLEFT", 20, -78)
-        f.cmd:SetSize(660, 22)
+        f.cmd:SetPoint("TOPLEFT", 24, -340)
+        f.cmd:SetSize(652, 22)
         f.cmd:SetAutoFocus(false)
         f.cmd:SetFontObject("GameFontHighlightSmall")
         f.cmd:SetScript("OnEscapePressed", function() f:Hide() end)
@@ -159,23 +258,6 @@ function MCA:ShowExportWindow(data)
         f.cmd:SetScript("OnTextChanged", function(box, user)
             if user then box:SetText(box.rpText or "") box:HighlightText() end
         end)
-
-        f.sub = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f.sub:SetPoint("TOPLEFT", 16, -112)
-        f.sub:SetText("Riepilogo testuale")
-
-        local scroll = CreateFrame("ScrollFrame", "RaidPulseExportScroll", f,
-            "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 20, -132)
-        scroll:SetPoint("BOTTOMRIGHT", -34, 46)
-
-        f.text = CreateFrame("EditBox", nil, scroll)
-        f.text:SetMultiLine(true)
-        f.text:SetAutoFocus(false)
-        f.text:SetFontObject("GameFontHighlightSmall")
-        f.text:SetWidth(620)
-        f.text:SetScript("OnEscapePressed", function() f:Hide() end)
-        scroll:SetScrollChild(f.text)
 
         local close = CreateFrame("Button", nil, f, "BackdropTemplate")
         close:SetPoint("BOTTOMRIGHT", -16, 14)
@@ -188,34 +270,13 @@ function MCA:ShowExportWindow(data)
         close:SetScript("OnClick", function() f:Hide() end)
     end
 
-    local command = self:GetExportCommand(data)
-    f.cmd.rpText = command
-    f.cmd:SetText(command)
-
-    local selector = self:GetExportSelector(data)
-    f.title:SetText("Esporta " .. tostring((data and data.boss) or "report"))
-    -- Two things the command needs and neither is obvious: the data has to be
-    -- on disk, and a relative path only resolves from one folder. The script
-    -- prints the /rp toolpath line that removes the second condition.
-    local stored = RaidPulseDB.config and RaidPulseDB.config.exportToolPath
-    local where = stored and "Copialo con ctrl+C."
-        or "Copialo con ctrl+C ed eseguilo dalla cartella _retail_ (lo script stampa "
-           .. "un comando /rp toolpath che toglie questo vincolo)."
-
-    f.hint:SetText(selector
-        and ("Comando per generare la pagina di questo "
-            .. (((data.type or "") == "M+") and "dungeon" or "gruppo raid")
-            .. ". Serve un /reload prima: i dati arrivano su disco solo allora. "
-            .. where)
-        or ("Comando per generare la pagina con tutto lo storico. Serve un /reload "
-            .. "prima: i dati arrivano su disco solo allora. " .. where))
-
-    f.text:SetText(self:GetExportText(data))
-    f.text:ClearFocus()
+    -- Opens on the group of whatever is on screen, which is the likely one
+    -- right after a pull, and stays wherever it was left otherwise.
+    local fromReport = self:GetExportGroupKey(data)
+    if fromReport then self.exportSelection = fromReport end
 
     f:Show()
-    f.cmd:SetFocus()
-    f.cmd:HighlightText()
+    self:RefreshExportWindow()
 end
 
 -- Which chat channel "Share in chat" should post to.

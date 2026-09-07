@@ -2378,6 +2378,90 @@ function MCA:GetPlayerFights(playerName)
     return order
 end
 
+-- What the web export can be pointed at, grouped the way the page groups it:
+-- a raid night by its group, a dungeon by its name. Newest first.
+--
+-- The same split as fightGroupOf, built here over whole containers rather than
+-- single fights, because the export addresses a night and not a boss.
+function MCA:GetExportGroups()
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    local byKey, order = {}, {}
+
+    for _, r in ipairs(history) do
+        if r and r.boss and r.boss ~= "" and r.historyID then
+            local isMplus = (r.type or "") == "M+"
+            local key = isMplus and ("mplus::" .. r.boss)
+                or ("raid::" .. tostring(r.groupID or "legacy"))
+
+            local entry = byKey[key]
+            if not entry then
+                entry = {
+                    key = key,
+                    kind = isMplus and "M+" or "raid",
+                    selector = isMplus and r.boss or tostring(r.groupID or "legacy"),
+                    bossOrder = {}, bossCount = {}, players = {},
+                    count = 0, kills = 0, first = 0, latest = 0,
+                }
+                byKey[key] = entry
+                order[#order + 1] = entry
+            end
+
+            entry.count = entry.count + 1
+            if r.result then entry.kills = entry.kills + 1 end
+
+            local epoch = tonumber(r.savedAtEpoch) or 0
+            if epoch > 0 then
+                if entry.first == 0 or epoch < entry.first then entry.first = epoch end
+                if epoch > entry.latest then entry.latest = epoch end
+            end
+
+            if not entry.bossCount[r.boss] then
+                entry.bossOrder[#entry.bossOrder + 1] = r.boss
+                entry.bossCount[r.boss] = 0
+            end
+            entry.bossCount[r.boss] = entry.bossCount[r.boss] + 1
+
+            for _, p in pairs(r.players or {}) do
+                if p.name then entry.players[p.name] = true end
+            end
+        end
+    end
+
+    for _, entry in ipairs(order) do
+        entry.playerCount = 0
+        for _ in pairs(entry.players) do entry.playerCount = entry.playerCount + 1 end
+
+        if entry.kind == "M+" then
+            entry.label = entry.bossOrder[1] or "?"
+        else
+            local names = {}
+            for i = 1, math.min(#entry.bossOrder, 2) do names[i] = entry.bossOrder[i] end
+            if #entry.bossOrder > 2 then
+                names[#names + 1] = "+" .. (#entry.bossOrder - 2)
+            end
+            entry.label = table.concat(names, ", ")
+        end
+
+        entry.stamp = "?"
+        if entry.first > 0 and date then
+            entry.stamp = date("%d/%m %H:%M", entry.first)
+            if entry.latest > entry.first then
+                entry.stamp = entry.stamp .. " - " .. date("%H:%M", entry.latest)
+            end
+        end
+    end
+
+    table.sort(order, function(a, b) return a.latest > b.latest end)
+    return order
+end
+
+-- The group a report belongs to, so the window opens on it.
+function MCA:GetExportGroupKey(data)
+    if not data or not data.boss then return nil end
+    if (data.type or "") == "M+" then return "mplus::" .. data.boss end
+    return "raid::" .. tostring(data.groupID or "legacy")
+end
+
 -- Prefers an explicit pick, then the fight of whatever report is open, then
 -- the most recent -- so the page always lands on something.
 function MCA:GetPlayerFight(fights, data)
