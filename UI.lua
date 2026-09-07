@@ -1749,7 +1749,40 @@ end
 local function attemptLabel(report)
     local t = tostring(report and report.savedAt or "")
     t = t:match("(%d%d:%d%d)%s*$") or t
+
+    -- Runs of one dungeon are charted together whatever the key, so each
+    -- column has to carry its level: without it a +4 next to a +10 reads as
+    -- the player having got worse.
+    if report and (report.type or "") == "M+" then
+        local level = tostring(report.difficulty or ""):match("^%+%d+$")
+        if level then t = t .. " " .. level end
+    end
+
     return "|cff" .. colorCode(outcomeColor(report)) .. t .. "|r"
+end
+
+-- Which attempts belong together.
+--
+-- Raid pulls are scoped to the raid group: a night with one roster and a night
+-- with another are not the same measurement, which is why the key carries the
+-- group.
+--
+-- A key is the opposite case. The group disbands at the end of every M+ run,
+-- so keying those on the group would leave each run alone on its own island
+-- and there would never be two of anything to compare. Runs of the same
+-- dungeon are comparable whoever they were run with and at whatever level, so
+-- they share one bucket keyed on the dungeon alone. The level still shows on
+-- each column, because a +4 and a +10 side by side otherwise read as one
+-- player getting better.
+local ANY_GROUP = "*"
+
+local function fightGroupOf(report)
+    if report and (report.type or "") == "M+" then return ANY_GROUP end
+    return (report and report.groupID) or "legacy"
+end
+
+local function fightKeyFor(report)
+    return tostring(report and report.boss) .. "||" .. fightGroupOf(report)
 end
 
 -- Every fight in the history worth comparing: one entry per boss (raid) or
@@ -1765,10 +1798,10 @@ function MCA:GetComparableFights()
     local byKey, order = {}, {}
     for _, r in ipairs(history) do
         if r and r.boss and r.boss ~= "" and r.historyID then
-            -- Reports saved before groups were tracked share one legacy bucket
-            -- rather than each becoming an uncomparable island.
-            local groupID = r.groupID or "legacy"
-            local key = r.boss .. "||" .. groupID
+            -- Reports saved before groups were tracked share one legacy
+            -- bucket rather than each becoming an uncomparable island.
+            local groupID = fightGroupOf(r)
+            local key = fightKeyFor(r)
 
             local entry = byKey[key]
             if not entry then
@@ -1816,7 +1849,7 @@ function MCA:GetComparisonCandidates(boss, groupID)
     for i = #history, 1, -1 do
         local r = history[i]
         if r and r.boss == boss and r.historyID
-           and (r.groupID or "legacy") == (groupID or "legacy") then
+           and (groupID == ANY_GROUP or (r.groupID or "legacy") == (groupID or "legacy")) then
             out[#out + 1] = r
         end
     end
@@ -1834,7 +1867,7 @@ function MCA:GetCompareFight(fights, data)
     -- The open report's own fight, matched on its group too so it does not
     -- land on the same boss played with someone else.
     if data and data.boss then
-        local wanted = data.boss .. "||" .. (data.groupID or "legacy")
+        local wanted = fightKeyFor(data)
         for _, f in ipairs(fights) do
             if f.key == wanted then
                 self.compareFightKey = f.key
@@ -2281,8 +2314,8 @@ function MCA:GetPlayerFights(playerName)
 
     for _, r in ipairs(history) do
         if r and r.boss and r.boss ~= "" and r.historyID and (r.players or {})[playerName] then
-            local groupID = r.groupID or "legacy"
-            local key = r.boss .. "||" .. groupID
+            local groupID = fightGroupOf(r)
+            local key = fightKeyFor(r)
 
             local entry = byKey[key]
             if not entry then
@@ -2321,7 +2354,7 @@ function MCA:GetPlayerFight(fights, data)
     end
 
     if data and data.boss then
-        local wanted = data.boss .. "||" .. (data.groupID or "legacy")
+        local wanted = fightKeyFor(data)
         for _, f in ipairs(fights) do
             if f.key == wanted then
                 self.playerFightKey = f.key
