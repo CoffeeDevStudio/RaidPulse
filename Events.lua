@@ -104,6 +104,12 @@ function MCA:PLAYER_ENTERING_WORLD()
 end
 
 function MCA:GROUP_ROSTER_UPDATE()
+    -- Dropping out of a group ends its run of attempts. Joining the next one
+    -- mints a fresh id at that group's first pull.
+    if not IsInGroup() and self.EndGroupSession then
+        self:EndGroupSession()
+    end
+
     self:UpdateRoster()
     -- Roster updates during combat should not trigger inspect calls (they're
     -- protected). Defer to next OnUpdate tick.

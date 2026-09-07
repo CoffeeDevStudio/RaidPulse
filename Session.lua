@@ -88,6 +88,41 @@ function MCA:CopyRosterToSession()
     end
 end
 
+-- A report belongs to the group it was recorded with. Leaving a raid ends that
+-- group's run of attempts, and the next group starts a fresh one, so four
+-- wipes with one roster are never lined up against four with another — they
+-- are two different stories, and comparing them would invite conclusions about
+-- people who were not there.
+--
+-- Kept in the DB rather than in memory so a /reload mid-raid does not split
+-- the night in two.
+function MCA:GetGroupSessionID()
+    RaidPulseDB.groupSession = RaidPulseDB.groupSession or {}
+    local gs = RaidPulseDB.groupSession
+
+    if not gs.id then
+        gs.startedAt = (time and time()) or 0
+        gs.id = tostring(gs.startedAt) .. "-" .. tostring(math.random(1000, 9999))
+    end
+
+    return gs.id, gs.startedAt
+end
+
+function MCA:EndGroupSession()
+    if not RaidPulseDB then return end
+    if RaidPulseDB.groupSession and RaidPulseDB.groupSession.id then
+        self:Debug("Gruppo terminato: i prossimi pull apriranno un nuovo gruppo")
+    end
+    RaidPulseDB.groupSession = {}
+end
+
+-- Stamp the running session with the group it belongs to. Done at the pull, so
+-- a roster change mid-fight cannot move the attempt to another group.
+function MCA:StampGroupSession()
+    if not self.session then return end
+    self.session.groupID, self.session.groupStartedAt = self:GetGroupSessionID()
+end
+
 function MCA:StartRaidEncounter(id, name)
     if self.session and self.session.type == "M+" then
         self.currentMythicBoss = {
@@ -114,6 +149,7 @@ function MCA:StartRaidEncounter(id, name)
     }
 
     self:CopyRosterToSession()
+    self:StampGroupSession()
     if self.CaptureSessionRaidBuffs then self:CaptureSessionRaidBuffs() end
     if self.StartSessionWatcher then self:StartSessionWatcher() end
 
@@ -169,6 +205,7 @@ function MCA:StartMythicPlusSession()
     }
 
     self:CopyRosterToSession()
+    self:StampGroupSession()
     if self.CaptureSessionRaidBuffs then self:CaptureSessionRaidBuffs() end
     if self.StartSessionWatcher then self:StartSessionWatcher() end
 

@@ -1609,13 +1609,19 @@ end
 function MCA:GetComparableFights()
     local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
 
-    local byBoss, order = {}, {}
+    local byKey, order = {}, {}
     for _, r in ipairs(history) do
         if r and r.boss and r.boss ~= "" and r.historyID then
-            local entry = byBoss[r.boss]
+            -- Reports saved before groups were tracked share one legacy bucket
+            -- rather than each becoming an uncomparable island.
+            local groupID = r.groupID or "legacy"
+            local key = r.boss .. " " .. groupID
+
+            local entry = byKey[key]
             if not entry then
-                entry = {boss = r.boss, type = r.type, count = 0, latest = 0}
-                byBoss[r.boss] = entry
+                entry = {key = key, boss = r.boss, groupID = groupID, type = r.type,
+                         count = 0, latest = 0, groupStartedAt = r.groupStartedAt}
+                byKey[key] = entry
                 order[#order + 1] = entry
             end
             entry.count = entry.count + 1
@@ -1624,48 +1630,55 @@ function MCA:GetComparableFights()
     end
 
     -- A single attempt has nothing to be compared against, so it is not offered.
-    local out = {}
+    local out, bossCounts = {}, {}
     for _, entry in ipairs(order) do
-        if entry.count >= 2 then out[#out + 1] = entry end
+        if entry.count >= 2 then
+            out[#out + 1] = entry
+            bossCounts[entry.boss] = (bossCounts[entry.boss] or 0) + 1
+        end
     end
 
     table.sort(out, function(a, b) return a.latest > b.latest end)
-    return out
-end
 
--- Every saved attempt on one fight, newest first.
-function MCA:GetComparisonCandidates(boss)
-    if not boss or boss == "" then return {} end
-
-    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
-    local out = {}
-    for i = #history, 1, -1 do
-        local r = history[i]
-        if r and r.boss == boss and r.historyID then out[#out + 1] = r end
+    -- Only say which group when the same fight appears under more than one,
+    -- otherwise every chip carries a date nobody needs to read.
+    for _, entry in ipairs(out) do
+        entry.label = entry.boss
+        if (bossCounts[entry.boss] or 0) > 1 then
+            local when = entry.groupStartedAt or entry.latest
+            local stamp = (when and when > 0 and date and date("%d/%m %H:%M", when)) or "gruppo prec."
+            entry.label = entry.boss .. " - " .. stamp
+        end
     end
+
     return out
 end
 
 -- Which fight the tab is showing. Prefers an explicit pick, then the open
 -- report's own fight, then whatever was played most recently — so opening the
 -- tab always lands on something rather than on an empty page.
-function MCA:GetCompareBoss(fights, data)
+function MCA:GetCompareFight(fights, data)
     for _, f in ipairs(fights) do
-        if f.boss == self.compareBoss then return self.compareBoss end
+        if f.key == self.compareFightKey then return f end
     end
 
-    local preferred = data and data.boss
-    for _, f in ipairs(fights) do
-        if f.boss == preferred then
-            self.compareBoss = preferred
-            self.compareSelection = nil
-            return preferred
+    -- The open report's own fight, matched on its group too so it does not
+    -- land on the same boss played with someone else.
+    if data and data.boss then
+        local wanted = data.boss .. " " .. (data.groupID or "legacy")
+        for _, f in ipairs(fights) do
+            if f.key == wanted then
+                self.compareFightKey = f.key
+                self.compareSelection = nil
+                return f
+            end
         end
     end
 
-    self.compareBoss = fights[1] and fights[1].boss
+    local first = fights[1]
+    self.compareFightKey = first and first.key
     self.compareSelection = nil
-    return self.compareBoss
+    return first
 end
 
 -- Selection is per fight: switching fights starts fresh rather than carrying
@@ -1712,24 +1725,25 @@ function MCA:DrawComparePage(parent, data, y)
         MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end
 
-    local boss = self:GetCompareBoss(fights, data)
+    local fight = self:GetCompareFight(fights, data)
+    local boss = fight and fight.boss
 
     -- Fight picker.
     self:Text(parent, "Boss / dungeon:", "GameFontNormalSmall",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4}, 300, self:UIColor("gray"))
     y = chipGrid(self, parent, y - 22, fights, 208, function(f, point, w, h)
         local tag = (f.type == "M+") and "M+" or "Raid"
-        self:FilterButton(parent, f.boss .. "  (" .. f.count .. " " .. tag .. ")",
-            point, w, h, f.boss == boss,
+        self:FilterButton(parent, f.label .. "  (" .. f.count .. " " .. tag .. ")",
+            point, w, h, f.key == (fight and fight.key),
             function()
-                MCA.compareBoss = f.boss
+                MCA.compareFightKey = f.key
                 MCA.compareSelection = nil
                 rebuild()
             end)
     end)
 
     -- Attempt picker for the chosen fight.
-    local candidates = self:GetComparisonCandidates(boss)
+    local candidates = self:GetComparisonCandidates(boss, fight and fight.groupID)
     local selection = self:GetCompareSelection(candidates)
 
     self:Text(parent, "Tentativi da confrontare:", "GameFontNormalSmall",
