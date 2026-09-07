@@ -1777,14 +1777,31 @@ local COMPARE_MAX_COLUMNS = 8
 -- Latin-1 but not the dingbat range, so the "nh" that used to be
 -- appended here came out as an empty box on every chip and column header.
 -- Inline colour codes always render.
+-- Kill and wipe are drawn in these two colours everywhere an attempt is shown,
+-- as text in the comparison tab and as a band under the columns in the player
+-- charts. Defined once as numbers and turned into escape codes on demand, so
+-- the two cannot drift apart.
+local OUTCOME_COLOR = {
+    kill = {85 / 255, 221 / 255, 85 / 255, 1},
+    wipe = {1, 85 / 255, 85 / 255, 1},
+}
+
+local function outcomeColor(report)
+    if report and report.result then return OUTCOME_COLOR.kill end
+    return OUTCOME_COLOR.wipe
+end
+
+local function colorCode(c)
+    return string.format("%02x%02x%02x",
+        math.floor(c[1] * 255 + 0.5),
+        math.floor(c[2] * 255 + 0.5),
+        math.floor(c[3] * 255 + 0.5))
+end
+
 local function attemptLabel(report)
     local t = tostring(report and report.savedAt or "")
     t = t:match("(%d%d:%d%d)%s*$") or t
-
-    if report and report.result then
-        return "|cff55dd55" .. t .. "|r"
-    end
-    return "|cffff5555" .. t .. "|r"
+    return "|cff" .. colorCode(outcomeColor(report)) .. t .. "|r"
 end
 
 -- Every fight in the history worth comparing: one entry per boss (raid) or
@@ -2170,9 +2187,9 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue)
     for _, point in ipairs(series) do maxV = math.max(maxV, point.value or 0) end
 
     -- Room kept above the plot for the title and the value labels, and below
-    -- it for the attempt times.
-    local baseline = -(h - 24)
-    local plotH = h - 70
+    -- it for the outcome band and the attempt times.
+    local baseline = -(h - 34)
+    local plotH = h - 80
 
     local axis = self:AcquireTexture(card, "ARTWORK")
     axis:SetColorTexture(0.30, 0.31, 0.33, 1)
@@ -2201,8 +2218,20 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue)
             {"BOTTOM", card, "TOPLEFT", cx, baseline + barH + 3}, slot,
             point.current and self:UIColor("white") or self:UIColor("gray"), "CENTER")
 
+        -- Kill or wipe, as a solid band directly under the column. The colour
+        -- of a five-character timestamp is too small a target to read across
+        -- six charts; a filled bar the width of the column is not, and the
+        -- bands line up into a single row that can be scanned left to right.
+        if point.outcome then
+            local band = self:AcquireTexture(card, "ARTWORK")
+            local o = point.outcome
+            band:SetColorTexture(o[1], o[2], o[3], 1)
+            band:SetPoint("TOPLEFT", card, "TOPLEFT", cx - barW / 2, baseline - 5)
+            band:SetSize(barW, 5)
+        end
+
         self:Text(card, point.label or "", "GameFontNormalSmall",
-            {"TOP", card, "TOPLEFT", cx, baseline - 5}, slot,
+            {"TOP", card, "TOPLEFT", cx, baseline - 14}, slot,
             self:UIColor("gray"), "CENTER")
     end
 
@@ -2278,7 +2307,7 @@ function MCA:DrawPlayerCharts(parent, data, y)
         return y - 60
     end
 
-    local cols, gapX, gapY, chartH = 2, 14, 14, 190
+    local cols, gapX, gapY, chartH = 2, 14, 14, 200
     local chartW = math.floor((PAGE_W - 2 * PAGE_PAD - gapX) / cols)
     local top, drawn = y, 0
 
@@ -2289,6 +2318,7 @@ function MCA:DrawPlayerCharts(parent, data, y)
             maxV = math.max(maxV, value)
             series[#series + 1] = {
                 label = attemptLabel(attempt.report),
+                outcome = outcomeColor(attempt.report),
                 value = value,
                 color = chartColor(self, metric, sel),
                 current = (data.historyID ~= nil and attempt.report.historyID == data.historyID)
@@ -2319,7 +2349,8 @@ function MCA:DrawPlayerCharts(parent, data, y)
     y = top - math.ceil(drawn / cols) * (chartH + gapY)
 
     self:Text(parent,
-        "Barra piena = il pull aperto ora. L'ora del tentativo e' verde se kill, rossa se wipe.",
+        "Fascia sotto la colonna: verde = kill, rossa = wipe. "
+        .. "Colonna a piena tinta = il pull aperto ora.",
         "GameFontNormalSmall",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, PAGE_W - 20,
         self:UIColor("gray"))
