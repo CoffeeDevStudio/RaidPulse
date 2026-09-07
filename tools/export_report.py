@@ -312,6 +312,46 @@ def collect_fights(history):
     return out
 
 
+def collect_containers(history):
+    """What gets one section of the page.
+
+    A dungeon is its own container: every run of it is pooled already. A raid
+    night is not -- the group is the unit of work, and "how did the night go"
+    means every boss and every pull in it, not one boss at a time. So raid
+    fights are gathered under their group and the bosses become subsections.
+    """
+    containers = {}
+    for fight in collect_fights(history):
+        if fight["type"] == "M+":
+            key, kind = "mplus::" + fight["key"], "mplus"
+        else:
+            key, kind = "raid::" + str(fight["group"] or "legacy"), "raid"
+
+        box = containers.get(key)
+        if box is None:
+            box = {"key": key, "kind": kind, "fights": [], "reports": []}
+            containers[key] = box
+        box["fights"].append(fight)
+        box["reports"].extend(fight["reports"])
+
+    out = []
+    for box in containers.values():
+        box["reports"].sort(key=lambda r: num(r.get("savedAtEpoch")))
+        box["fights"].sort(key=lambda f: num(f["reports"][0].get("savedAtEpoch")))
+        box["first"] = num(box["reports"][0].get("savedAtEpoch"))
+        box["latest"] = num(box["reports"][-1].get("savedAtEpoch"))
+        out.append(box)
+
+    out.sort(key=lambda b: -b["latest"])
+    return out
+
+
+def when(epoch, fmt="%d/%m %H:%M"):
+    if not epoch:
+        return "?"
+    return dt.datetime.fromtimestamp(epoch).strftime(fmt)
+
+
 def players_of(fight):
     """Every player seen in any attempt, with the most recent row for each."""
     latest = {}
@@ -453,6 +493,49 @@ def compare_table(fight, metric, players):
             % ("".join(head), "".join(rows)))
 
 
+def night_table(container, metric, players):
+    """Every attempt of the raid night as a column, across bosses.
+
+    Deliberately uncoloured, unlike the per-boss tables. A rise from one boss
+    to the next is not an improvement, it is a different fight: painting it
+    green would invent a trend out of two unrelated encounters.
+    """
+    fmt = formatter(metric)
+    reports = container["reports"]
+
+    head = ['<th class="name">Player</th>']
+    for report in reports:
+        colour = KILL if report.get("result") else WIPE
+        head.append('<th><span class="boss">%s</span><br>'
+                    '<span style="color:%s">%s</span></th>'
+                    % (esc(report.get("boss") or "?"), colour,
+                       esc(attempt_label(report))))
+
+    order = sorted(
+        players,
+        key=lambda n: (-sum(1 for r in reports
+                            if isinstance((r.get("players") or {}).get(n), dict)), n),
+    )
+
+    rows = []
+    for name in order:
+        cells = ['<td class="name" style="color:%s">%s</td>'
+                 % (class_color(players[name]), esc(name))]
+        for report in reports:
+            row = (report.get("players") or {}).get(name)
+            if not isinstance(row, dict):
+                cells.append('<td class="absent">-</td>')
+                continue
+            text = fmt(metric["get"](row))
+            if metric["kind"] == "rate" and num(row.get("deaths")) > 0:
+                text += " +%d" % int(num(row["deaths"]))
+            cells.append("<td>%s</td>" % text)
+        rows.append("<tr>%s</tr>" % "".join(cells))
+
+    return ('<table><thead><tr>%s</tr></thead><tbody>%s</tbody></table>'
+            % ("".join(head), "".join(rows)))
+
+
 CSS = """
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
@@ -494,12 +577,16 @@ td.up { color:#55dd55; } td.down { color:#ff5555; }
 .player { border-top:1px solid #232529; }
 .player > summary { color:#e6e6e6; }
 .warn { color:#ffb454; }
+th .boss { color:#6f747c; font-size:10px; font-weight:400; }
+details.boss > summary { color:#ffd100; background:#1a1c21; font-weight:600; }
+details.boss > div { padding:0 0 8px; }
+details.boss > div > details > summary { padding-left:32px; }
 """
 
 
 def render(db, sv_path):
     history = as_list((db or {}).get("history") or {})
-    fights = collect_fights(history)
+    containers = collect_containers(history)
 
     mtime = dt.datetime.fromtimestamp(os.path.getmtime(sv_path))
     age = dt.datetime.now() - mtime
@@ -509,9 +596,9 @@ def render(db, sv_path):
            "<title>RaidPulse — report</title><style>%s</style></head><body>" % CSS]
 
     out.append("<header><h1>RaidPulse — report</h1>")
-    out.append("<div class='sub'>%d fight, %d tentativi salvati &middot; "
+    out.append("<div class='sub'>%d sezioni, %d tentativi salvati &middot; "
                "generato %s</div>" %
-               (len(fights), len(history),
+               (len(containers), len(history),
                 dt.datetime.now().strftime("%d/%m/%Y %H:%M")))
     out.append("<div class='sub'>Origine: %s &middot; scritto %s%s</div>" % (
         esc(sv_path), mtime.strftime("%d/%m/%Y %H:%M"),
@@ -519,53 +606,109 @@ def render(db, sv_path):
          % (age.total_seconds() // 3600)) if age.total_seconds() > 3600 else ""))
     out.append("</header><main>")
 
-    if not fights:
+    if not containers:
         out.append("<p>Nessun report nello storico.</p>")
 
-    for fight in fights:
-        players = players_of(fight)
-        reports = fight["reports"]
-        kind = "M+" if fight["type"] == "M+" else "Raid"
-        scope = ("tutte le run, qualunque chiave e gruppo" if fight["type"] == "M+"
-                 else "gruppo %s" % esc(fight["group"] or "?"))
+    for box in containers:
+        reports = box["reports"]
+        all_players = {}
+        for fight in box["fights"]:
+            all_players.update(players_of(fight))
 
-        out.append("<section class='fight'><h2>%s<span class='tag'>%s &middot; "
-                   "%d tentativi &middot; %s &middot; %d player</span></h2>"
-                   % (esc(fight["boss"]), kind, len(reports), scope, len(players)))
+        if box["kind"] == "raid":
+            same_day = when(box["first"], "%d/%m") == when(box["latest"], "%d/%m")
+            span = when(box["first"]) + " - " + when(
+                box["latest"], "%H:%M" if same_day else "%d/%m %H:%M")
+            title = "Gruppo raid &mdash; %s" % esc(span)
+            # The bosses by name, not just how many: a night is remembered by
+            # what it was spent on.
+            names = [f["boss"] for f in box["fights"]]
+            listed = ", ".join(names[:3])
+            if len(names) > 3:
+                listed += " +%d" % (len(names) - 3)
+            tag = ("Raid &middot; %s &middot; %d tentativi &middot; %d player"
+                   % (esc(listed), len(reports), len(all_players)))
+        else:
+            title = esc(box["fights"][0]["boss"])
+            tag = ("M+ &middot; %d run &middot; tutte le chiavi e i gruppi "
+                   "&middot; %d player" % (len(reports), len(all_players)))
 
-        for metric in METRICS:
-            has_any = any(
-                metric["get"](p) > 0
-                for r in reports for p in (r.get("players") or {}).values()
-                if isinstance(p, dict)
-            )
-            if not has_any and metric["key"] != "deaths":
-                continue
-            out.append("<details%s><summary>Confronto — %s</summary><div>%s</div></details>"
-                       % (" open" if metric["key"] == "dps" else "",
-                          esc(metric["label"]), compare_table(fight, metric, players)))
+        out.append("<section class='fight'><h2>%s<span class='tag'>%s</span></h2>"
+                   % (title, tag))
 
-        for name in ordered_players(fight, players):
-            role = str(players[name].get("role") or "DAMAGER").upper()
-            keys = ROLE_CHARTS.get(role, ROLE_CHARTS["DAMAGER"])
-            cards = "".join(chart_for(fight, name, k, players) for k in keys)
-            seen = appearances(fight, name)
-            out.append(
-                "<details class='player'><summary><span style='color:%s'>%s</span> "
-                "— %s <span class='tag'>%d/%d tentativi</span></summary>"
-                "<div class='grid'>%s</div></details>"
-                % (class_color(players[name]), esc(name),
-                   esc(ROLE_LABEL.get(role, "DPS")), seen, len(reports), cards))
+        # The whole night at once, which is what "every attempt of every boss
+        # in this group" asks for. Raids only: a dungeon container is already
+        # a single fight, so this would just repeat the table below it.
+        if box["kind"] == "raid":
+            for metric in METRICS:
+                if not has_data(reports, metric):
+                    continue
+                out.append("<details%s><summary>Tutti i tentativi &mdash; %s</summary>"
+                           "<div>%s</div></details>"
+                           % (" open" if metric["key"] == "dps" else "",
+                              esc(metric["label"]),
+                              night_table(box, metric, all_players)))
+
+        for fight in box["fights"]:
+            out.append(render_fight(fight, nested=(box["kind"] == "raid")))
 
         out.append("<div class='legend'>Fascia sotto la colonna: verde = kill, "
-                   "rossa = wipe. Colonna a piena tinta = il tentativo più "
-                   "recente. Verde/rosso nelle tabelle = variazione oltre il 5% "
-                   "rispetto al tentativo precedente (qualunque variazione per "
-                   "Parse e Morti). &quot;+N&quot; = morti.</div>")
+                   "rossa = wipe. Colonna a piena tinta = il tentativo pi\u00f9 "
+                   "recente. Verde/rosso nelle tabelle per boss = variazione oltre "
+                   "il 5% rispetto al tentativo precedente (qualunque variazione "
+                   "per Parse e Morti). La tabella di tutti i tentativi non \u00e8 "
+                   "colorata: fra un boss e l\u2019altro una differenza non \u00e8 "
+                   "un miglioramento. &quot;+N&quot; = morti.</div>")
         out.append("</section>")
 
     out.append("</main></body></html>")
     return "\n".join(out)
+
+
+def has_data(reports, metric):
+    """Deaths are drawn even when nobody died; everything else earns its place."""
+    if metric["key"] == "deaths":
+        return True
+    return any(metric["get"](p) > 0
+               for r in reports for p in (r.get("players") or {}).values()
+               if isinstance(p, dict))
+
+
+def render_fight(fight, nested=False):
+    """One boss: its comparison tables and a card per player."""
+    players = players_of(fight)
+    reports = fight["reports"]
+    out = []
+
+    if nested:
+        out.append("<details class='boss'><summary>%s <span class='tag'>%d "
+                   "tentativi &middot; %d player</span></summary><div>"
+                   % (esc(fight["boss"]), len(reports), len(players)))
+
+    for metric in METRICS:
+        if not has_data(reports, metric):
+            continue
+        out.append("<details%s><summary>Confronto &mdash; %s</summary>"
+                   "<div>%s</div></details>"
+                   % (" open" if (metric["key"] == "dps" and not nested) else "",
+                      esc(metric["label"]), compare_table(fight, metric, players)))
+
+    for name in ordered_players(fight, players):
+        role = str(players[name].get("role") or "DAMAGER").upper()
+        keys = ROLE_CHARTS.get(role, ROLE_CHARTS["DAMAGER"])
+        cards = "".join(chart_for(fight, name, k, players) for k in keys)
+        seen = appearances(fight, name)
+        out.append(
+            "<details class='player'><summary><span style='color:%s'>%s</span> "
+            "&mdash; %s <span class='tag'>%d/%d tentativi</span></summary>"
+            "<div class='grid'>%s</div></details>"
+            % (class_color(players[name]), esc(name),
+               esc(ROLE_LABEL.get(role, "DPS")), seen, len(reports), cards))
+
+    if nested:
+        out.append("</div></details>")
+
+    return "".join(out)
 
 
 def main():
