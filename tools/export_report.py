@@ -493,6 +493,63 @@ def compare_table(fight, metric, players):
             % ("".join(head), "".join(rows)))
 
 
+def container_title(box):
+    """(title, tag, plain) for one section. The listing and the page have to
+    agree on what a section is called, so both read it from here."""
+    reports = box["reports"]
+    players = {}
+    for fight in box["fights"]:
+        players.update(players_of(fight))
+
+    if box["kind"] == "raid":
+        same_day = when(box["first"], "%d/%m") == when(box["latest"], "%d/%m")
+        span = when(box["first"]) + " - " + when(
+            box["latest"], "%H:%M" if same_day else "%d/%m %H:%M")
+        names = [f["boss"] for f in box["fights"]]
+        listed = ", ".join(names[:3])
+        if len(names) > 3:
+            listed += " +%d" % (len(names) - 3)
+        title = "Gruppo raid &mdash; %s" % esc(span)
+        tag = ("Raid &middot; %s &middot; %d tentativi &middot; %d player"
+               % (esc(listed), len(reports), len(players)))
+        plain = "Gruppo raid %s - %s" % (span, listed)
+    else:
+        title = esc(box["fights"][0]["boss"])
+        tag = ("M+ &middot; %d run &middot; tutte le chiavi e i gruppi "
+               "&middot; %d player" % (len(reports), len(players)))
+        plain = "M+ %s" % box["fights"][0]["boss"]
+
+    return title, tag, plain, players
+
+
+def selector_of(box):
+    """What --only matches against, besides the index."""
+    if box["kind"] == "raid":
+        return str(box["fights"][0]["group"] or "legacy")
+    return str(box["fights"][0]["boss"])
+
+
+def select_containers(containers, wanted):
+    """An index from --list, a groupID, or part of a name."""
+    if not wanted:
+        return containers
+
+    needle = wanted.strip().lower()
+    if needle.isdigit():
+        i = int(needle)
+        if 1 <= i <= len(containers):
+            return [containers[i - 1]]
+        raise SystemExit("--only %s: fuori intervallo, ci sono %d sezioni "
+                         "(usa --list)" % (wanted, len(containers)))
+
+    hits = [b for b in containers
+            if needle == selector_of(b).lower()
+            or needle in container_title(b)[2].lower()]
+    if not hits:
+        raise SystemExit("--only %s: nessuna sezione corrisponde (usa --list)" % wanted)
+    return hits
+
+
 def night_table(container, metric, players):
     """Every attempt of the raid night as a column, across bosses.
 
@@ -584,9 +641,9 @@ details.boss > div > details > summary { padding-left:32px; }
 """
 
 
-def render(db, sv_path):
+def render(db, sv_path, containers, total_sections=None, filter_note=""):
     history = as_list((db or {}).get("history") or {})
-    containers = collect_containers(history)
+    shown = sum(len(b["reports"]) for b in containers)
 
     mtime = dt.datetime.fromtimestamp(os.path.getmtime(sv_path))
     age = dt.datetime.now() - mtime
@@ -596,10 +653,13 @@ def render(db, sv_path):
            "<title>RaidPulse — report</title><style>%s</style></head><body>" % CSS]
 
     out.append("<header><h1>RaidPulse — report</h1>")
-    out.append("<div class='sub'>%d sezioni, %d tentativi salvati &middot; "
-               "generato %s</div>" %
-               (len(containers), len(history),
-                dt.datetime.now().strftime("%d/%m/%Y %H:%M")))
+    scope = "%d sezioni, %d tentativi" % (len(containers), shown)
+    if total_sections and total_sections != len(containers):
+        scope += (" (di %d sezioni e %d tentativi nello storico)"
+                  % (total_sections, len(history)))
+    out.append("<div class='sub'>%s &middot; generato %s%s</div>" %
+               (scope, dt.datetime.now().strftime("%d/%m/%Y %H:%M"),
+                filter_note))
     out.append("<div class='sub'>Origine: %s &middot; scritto %s%s</div>" % (
         esc(sv_path), mtime.strftime("%d/%m/%Y %H:%M"),
         (" <span class='warn'>(%d ore fa: fai /reload per aggiornarlo)</span>"
@@ -611,27 +671,7 @@ def render(db, sv_path):
 
     for box in containers:
         reports = box["reports"]
-        all_players = {}
-        for fight in box["fights"]:
-            all_players.update(players_of(fight))
-
-        if box["kind"] == "raid":
-            same_day = when(box["first"], "%d/%m") == when(box["latest"], "%d/%m")
-            span = when(box["first"]) + " - " + when(
-                box["latest"], "%H:%M" if same_day else "%d/%m %H:%M")
-            title = "Gruppo raid &mdash; %s" % esc(span)
-            # The bosses by name, not just how many: a night is remembered by
-            # what it was spent on.
-            names = [f["boss"] for f in box["fights"]]
-            listed = ", ".join(names[:3])
-            if len(names) > 3:
-                listed += " +%d" % (len(names) - 3)
-            tag = ("Raid &middot; %s &middot; %d tentativi &middot; %d player"
-                   % (esc(listed), len(reports), len(all_players)))
-        else:
-            title = esc(box["fights"][0]["boss"])
-            tag = ("M+ &middot; %d run &middot; tutte le chiavi e i gruppi "
-                   "&middot; %d player" % (len(reports), len(all_players)))
+        title, tag, _, all_players = container_title(box)
 
         out.append("<section class='fight'><h2>%s<span class='tag'>%s</span></h2>"
                    % (title, tag))
@@ -715,7 +755,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sv", help="path to RaidPulse.lua (auto-detected otherwise)")
-    ap.add_argument("--out", default="report.html", help="output file")
+    ap.add_argument("--out", default=None,
+                    help="output file (default report.html, or report-<sezione>.html "
+                         "when --only picks one)")
+    ap.add_argument("--list", action="store_true",
+                    help="list the sections and exit, without writing anything")
+    ap.add_argument("--only", metavar="SEZIONE",
+                    help="only this section: its number from --list, its groupID, "
+                         "or part of its name")
     args = ap.parse_args()
 
     sv = args.sv or find_saved_variables()
@@ -724,14 +771,51 @@ def main():
                  "WTF/Account/<id>/SavedVariables/RaidPulse.lua")
 
     db = load_saved_variables(sv)
-    page = render(db, sv)
+    history = as_list((db or {}).get("history") or {})
+    containers = collect_containers(history)
 
-    with open(args.out, "w", encoding="utf-8") as fh:
+    if args.list:
+        print("%s — %d report, %d sezioni\n" % (sv, len(history), len(containers)))
+        for i, box in enumerate(containers, start=1):
+            _, _, plain, players = container_title(box)
+            print("%3d  %-52s %2d tentativi  %2d player   [%s]"
+                  % (i, plain[:52], len(box["reports"]), len(players),
+                     selector_of(box)))
+        print("\nGenerane una sola:  --only <numero>   (oppure il groupID, "
+              "o parte del nome)")
+        return
+
+    chosen = select_containers(containers, args.only)
+
+    out_path = args.out
+    if not out_path:
+        if args.only and len(chosen) == 1:
+            # Short and predictable: the whole title makes a filename nobody
+            # can type twice.
+            box = chosen[0]
+            if box["kind"] == "raid":
+                base = "raid-" + when(box["first"], "%Y%m%d-%H%M")
+            else:
+                base = "mplus-" + str(box["fights"][0]["boss"])
+            out_path = "report-%s.html" % re.sub(
+                r"[^A-Za-z0-9]+", "-", base).strip("-").lower()
+        else:
+            out_path = "report.html"
+
+    note = ""
+    if args.only:
+        note = " &middot; filtro: %s" % esc(args.only)
+
+    page = render(db, sv, chosen, total_sections=len(containers), filter_note=note)
+
+    with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(page)
 
-    history = as_list((db or {}).get("history") or {})
     print("Read %s (%d report)" % (sv, len(history)))
-    print("Wrote %s (%.0f KB)" % (args.out, os.path.getsize(args.out) / 1024))
+    if args.only:
+        for box in chosen:
+            print("  sezione: %s" % container_title(box)[2])
+    print("Wrote %s (%.0f KB)" % (out_path, os.path.getsize(out_path) / 1024))
 
 
 if __name__ == "__main__":
