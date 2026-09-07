@@ -91,6 +91,25 @@ end
 -- created once and kept on purpose, and orphaning it would leak exactly what
 -- the widget pool exists to avoid. Its contents come from the pool and are
 -- redrawn at the new measurements anyway.
+-- Resize the frame only. Used while a slider is being dragged: rebuilding the
+-- window on every value change would recycle the slider being dragged, so the
+-- frame grows live and the contents reflow once the mouse is released.
+function MCA:PreviewWindowShare(share)
+    RaidPulseDB.config = RaidPulseDB.config or {}
+    RaidPulseDB.config.windowShare = math.max(0.4, math.min(1.0, tonumber(share) or WINDOW_SHARE_DEFAULT))
+    self:RefreshLayout()
+    return FRAME_W, FRAME_H
+end
+
+function MCA:GetWindowShare()
+    local v = RaidPulseDB and RaidPulseDB.config and tonumber(RaidPulseDB.config.windowShare)
+    return v or WINDOW_SHARE_DEFAULT
+end
+
+function MCA:GetWindowSize()
+    return FRAME_W, FRAME_H
+end
+
 function MCA:SetWindowShare(share)
     RaidPulseDB.config = RaidPulseDB.config or {}
     RaidPulseDB.config.windowShare = math.max(0.4, math.min(1.0, tonumber(share) or WINDOW_SHARE_DEFAULT))
@@ -383,6 +402,41 @@ end
 -- as part of the panel it sits in instead of as a second boxed-in table. The
 -- scrolling itself is unaffected; only the chrome goes.
 local TRANSPARENT = {0, 0, 0, 0}
+
+-- Built from a bare Slider rather than OptionsSliderTemplate: that template
+-- reaches for its labels through globals derived from the frame's name, and
+-- pooled frames are deliberately unnamed. The labels are ours instead.
+function MCA:Slider(parent, point, w, minV, maxV, value, onChange, onRelease)
+    local slider = self:AcquireFrame("Slider", parent, nil, "slider")
+    slider:SetPoint(unpack(point))
+    slider:SetSize(w, 18)
+    slider:SetOrientation("HORIZONTAL")
+
+    -- Style once and let it ride along with the pooled frame.
+    if not slider.rpStyled then
+        slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+        slider.rpStyled = true
+    end
+    self:SetBackdropSolid(slider, {0.05,0.05,0.06,0.9}, {0.30,0.31,0.33,1})
+
+    slider:SetMinMaxValues(minV, maxV)
+    slider:SetValueStep(1)
+    if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
+
+    -- Set the value before wiring the handler, or positioning the thumb would
+    -- itself count as a change and apply a resize on every render.
+    slider:SetScript("OnValueChanged", nil)
+    slider:SetValue(value)
+    slider:SetScript("OnValueChanged", function(_, v)
+        if onChange then onChange(math.floor(v + 0.5)) end
+    end)
+    slider:SetScript("OnMouseUp", function(sliderFrame)
+        if onRelease then onRelease(math.floor(sliderFrame:GetValue() + 0.5)) end
+    end)
+
+    slider:Show()
+    return slider
+end
 
 function MCA:Scroll(parent, point, w, h, bg, flush)
     -- Tagged so scroll containers keep their own pool: a recycled plain panel
@@ -2032,6 +2086,42 @@ function MCA:DrawFullPage(root, data)
     local y = -50
 
     if self.activeTab == "settings" then
+        local function sectionHeader(title)
+            self:Text(child, title, "GameFontHighlightLarge",
+                {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 400, self:UIColor("accent"))
+            y = y - 30
+        end
+
+        sectionHeader("Grafica")
+
+        local w, h = self:GetWindowSize()
+        local sizeLabel = self:Text(child,
+            string.format("Dimensione finestra: %d%%  (%dx%d)",
+                math.floor(self:GetWindowShare() * 100 + 0.5), w, h),
+            "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 420,
+            self:UIColor("white"))
+        y = y - 26
+
+        self:Slider(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 320,
+            40, 100, math.floor(self:GetWindowShare() * 100 + 0.5),
+            function(pct)
+                -- Live: the window grows as the thumb moves.
+                local nw, nh = MCA:PreviewWindowShare(pct / 100)
+                sizeLabel:SetText(string.format("Dimensione finestra: %d%%  (%dx%d)", pct, nw, nh))
+            end,
+            function(pct)
+                -- On release: reflow the contents at the new measurements.
+                MCA:SetWindowShare(pct / 100)
+            end)
+        y = y - 34
+
+        self:Text(child, "40% - 100% dello schermo. Il contenuto si riadatta quando rilasci.",
+            "GameFontNormalSmall", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 500,
+            self:UIColor("gray"))
+        y = y - 40
+
+        sectionHeader("Report")
+
         local settings = {
             {"Debug", "debug"},
             {"ElvUI Skin", "useElvUISkin"},
@@ -2041,10 +2131,10 @@ function MCA:DrawFullPage(root, data)
             {"Show M+ End", "showMythicEnd"}
         }
 
-        for _, s in ipairs(settings) do
-            self:Text(child, s[1]..": "..(RaidPulseDB.config[s[2]] and "ON" or "OFF"), "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 200, RaidPulseDB.config[s[2]] and self:UIColor("green") or self:UIColor("red"))
+        for _, sett in ipairs(settings) do
+            self:Text(child, sett[1]..": "..(RaidPulseDB.config[sett[2]] and "ON" or "OFF"), "GameFontNormal", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 200, RaidPulseDB.config[sett[2]] and self:UIColor("green") or self:UIColor("red"))
             self:Button(child, "Toggle", {"TOPLEFT", child, "TOPLEFT", 240, y+4}, 90, 22, function()
-                RaidPulseDB.config[s[2]] = not RaidPulseDB.config[s[2]]
+                RaidPulseDB.config[sett[2]] = not RaidPulseDB.config[sett[2]]
                 MCA:BuildDashboard(data)
             end)
             y = y - 36
