@@ -404,6 +404,20 @@ function MCA:GetDamageMeterEnumValue(enumTable, key, fallback)
     return fallback
 end
 
+-- The client's own name for the damage-taken meter. This enum has shipped
+-- under more than one spelling, and guessing an index would silently read
+-- whichever meter happens to sit there, so each candidate name is tried and
+-- the capture is skipped outright when none matches.
+function MCA:GetDamageTakenMeterType()
+    if not (Enum and Enum.DamageMeterType) then return nil end
+    for _, key in ipairs({"DamageTaken", "DamageReceived", "Taken", "DamageTakenPerSecond"}) do
+        if Enum.DamageMeterType[key] ~= nil then
+            return Enum.DamageMeterType[key], key
+        end
+    end
+    return nil
+end
+
 function MCA:NormalizeDamageMeterSessionName(name)
     if not name then return "" end
     local n = tostring(name)
@@ -591,6 +605,24 @@ function MCA:ReportDamageMeterState()
     end
     self:Print("Damage meter disponibile: " .. tostring(self:DamageMeterAvailable()))
 
+    -- Which meters this client actually offers. The damage-taken capture picks
+    -- its type by name out of this list, so when the tank charts come up empty
+    -- this line says whether the meter exists at all.
+    if Enum and Enum.DamageMeterType then
+        local names = {}
+        for key, value in pairs(Enum.DamageMeterType) do
+            names[#names + 1] = tostring(key) .. "=" .. tostring(value)
+        end
+        table.sort(names)
+        self:Print("  DamageMeterType: " .. table.concat(names, ", "))
+
+        local _, takenKey = self:GetDamageTakenMeterType()
+        self:Print("  Danno subito: " .. (takenKey and ("via " .. takenKey)
+            or "NON esposto da questo client"))
+    else
+        self:Print("  Enum.DamageMeterType assente.")
+    end
+
     if not C_DamageMeter.GetAvailableCombatSessions then
         self:Print("  GetAvailableCombatSessions assente.")
         return
@@ -677,8 +709,20 @@ function MCA:CaptureDamageMeterStats()
     local dpsApplied = self:ApplyBlizzardDamageMeterSources(dpsSession, "dps", "blizzardDps", "blizzardDamageDone")
     local hpsApplied = self:ApplyBlizzardDamageMeterSources(hpsSession, "hps", "blizzardHps", "blizzardHealingDone")
 
+    -- Damage taken, which the tank charts need and nothing else reads. Absent
+    -- on a client whose meter does not expose it; that is a missing chart, not
+    -- a broken capture, so it stays out of the warning below.
+    local takenApplied = 0
+    local takenType = self:GetDamageTakenMeterType()
+    if takenType then
+        takenApplied = self:ApplyBlizzardDamageMeterSources(
+            self:GetBlizzardDamageMeterSession(sessionID, takenType),
+            "taken", "blizzardDtps", "blizzardDamageTaken")
+    end
+
     self.session.blizzard.dpsApplied = dpsApplied
     self.session.blizzard.hpsApplied = hpsApplied
+    self.session.blizzard.takenApplied = takenApplied
 
     if self.CaptureBlizzardInterrupts then
         self:CaptureBlizzardInterrupts(self.session, sessionID)

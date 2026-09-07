@@ -1740,11 +1740,11 @@ end
 local COMPARE_METRICS = {
     {key = "dps",        label = "DPS",       kind = "rate",  better = 1,
      get = function(self, p) return self:GetPlayerDPS(p) end},
-    {key = "damage",     label = "Danno",     kind = "rate",  better = 1,
+    {key = "damage",     label = "Damage Overall", kind = "rate", better = 1,
      get = function(self, p) return tonumber(p.blizzardDamageDone or p.damageDone) or 0 end},
     {key = "hps",        label = "HPS",       kind = "rate",  better = 1,
      get = function(self, p) return tonumber(p.blizzardHps or p.hps) or 0 end},
-    {key = "healing",    label = "Cure",      kind = "rate",  better = 1,
+    {key = "healing",    label = "Heal Overall",   kind = "rate", better = 1,
      get = function(self, p) return tonumber(p.blizzardHealingDone or p.healingDone) or 0 end},
     {key = "parse",      label = "Parse",     kind = "count", better = 1,
      get = function(self, p) return tonumber(p.mcaRating) or 0 end},
@@ -1982,7 +1982,7 @@ function MCA:DrawComparePage(parent, data, y)
     local metric = self:GetCompareMetric()
     self:Text(parent, "Metrica:", "GameFontNormalSmall",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300, self:UIColor("gray"))
-    y = chipGrid(self, parent, y - 28, COMPARE_METRICS, 104, function(m, point, w, h)
+    y = chipGrid(self, parent, y - 28, COMPARE_METRICS, 136, function(m, point, w, h)
         self:FilterButton(parent, m.label, point, w, h, m.key == metric.key,
             function()
                 MCA.compareMetric = m.key
@@ -2154,6 +2154,37 @@ end
 -- off rather than being squeezed.
 local PLAYER_CHART_MAX_BARS = 12
 
+-- Damage taken is charted for tanks but deliberately kept out of the
+-- comparison tab: no attempt saved before it started being captured carries
+-- the figure, so as a column it would be a page of dashes.
+--
+-- better = 0 means the change is reported without a verdict. Less damage taken
+-- is not simply better -- a longer pull takes more -- and painting a survived
+-- pull red would be a claim the number cannot support.
+local PLAYER_EXTRA_METRICS = {
+    {key = "taken", label = "Damage Taken", kind = "rate", better = 0,
+     get = function(self, p) return tonumber(p.blizzardDamageTaken or p.damageTaken) or 0 end},
+}
+
+-- Which charts each role gets, in the order they are drawn. A healer's damage
+-- and a damage dealer's healing are noise, so they are not drawn even when the
+-- numbers are there.
+local PLAYER_CHART_ROLES = {
+    TANK    = {"taken", "dps", "damage", "parse", "deaths"},
+    HEALER  = {"hps", "healing", "parse", "deaths"},
+    DAMAGER = {"dps", "damage", "parse", "deaths"},
+}
+
+local playerChartMetrics = {}
+for _, m in ipairs(COMPARE_METRICS) do playerChartMetrics[m.key] = m end
+for _, m in ipairs(PLAYER_EXTRA_METRICS) do playerChartMetrics[m.key] = m end
+
+-- Anything without a role, and anyone the client reports as NONE, is charted
+-- as a damage dealer.
+local function chartsForRole(role)
+    return PLAYER_CHART_ROLES[tostring(role or "")] or PLAYER_CHART_ROLES.DAMAGER
+end
+
 -- Every saved attempt on this fight, by this group, in which the player
 -- appears -- oldest first, so the chart reads left to right in time.
 --
@@ -2247,6 +2278,14 @@ local function chartColor(self, metric, player)
     return self:GetClassColor(player and player.class)
 end
 
+-- Grey where the metric carries no verdict, so the change is reported without
+-- being called an improvement or a regression.
+local function verdictCode(metric, delta)
+    if (metric.better or 0) == 0 then return "999999" end
+    if (delta > 0) == (metric.better > 0) then return "55dd55" end
+    return "ff5555"
+end
+
 -- The headline each chart exists to answer: better or worse than last pull.
 -- Rates carry the same 5% deadband as the comparison table, so ordinary
 -- variance is not reported as a trend.
@@ -2260,16 +2299,13 @@ local function chartTrend(metric, series)
         if prev <= 0 then return "" end
         local pct = (last - prev) / prev * 100
         if math.abs(pct) < 5 then return "  |cff999999(stabile)|r" end
-        local good = (pct > 0) == (metric.better > 0)
         return string.format("  |cff%s(%+.0f%% vs prec.)|r",
-            good and "55dd55" or "ff5555", pct)
+            verdictCode(metric, pct), pct)
     end
 
     local diff = last - prev
     if diff == 0 then return "  |cff999999(invariato)|r" end
-    local good = (diff > 0) == (metric.better > 0)
-    return string.format("  |cff%s(%+d vs prec.)|r",
-        good and "55dd55" or "ff5555", diff)
+    return string.format("  |cff%s(%+d vs prec.)|r", verdictCode(metric, diff), diff)
 end
 
 function MCA:DrawPlayerCharts(parent, data, y)
@@ -2311,8 +2347,10 @@ function MCA:DrawPlayerCharts(parent, data, y)
     local chartW = math.floor((PAGE_W - 2 * PAGE_PAD - gapX) / cols)
     local top, drawn = y, 0
 
-    for _, metric in ipairs(COMPARE_METRICS) do
+    for _, key in ipairs(chartsForRole(sel.role)) do
+        local metric = playerChartMetrics[key]
         local series, maxV = {}, 0
+
         for _, attempt in ipairs(attempts) do
             local value = tonumber(metric.get(self, attempt.player)) or 0
             maxV = math.max(maxV, value)
@@ -2326,24 +2364,30 @@ function MCA:DrawPlayerCharts(parent, data, y)
             }
         end
 
-        -- A metric this player never posted is left out rather than drawn as a
-        -- row of empty columns. Deaths are the exception: zero is the answer.
-        if maxV > 0 or metric.key == "deaths" then
-            local formatValue
-            if metric.kind == "rate" then
-                formatValue = function(v) return MCA:FormatMetricValue(v) end
-            else
-                formatValue = function(v) return tostring(math.floor(v or 0)) end
-            end
-
-            self:DrawBarChart(parent,
-                PAGE_X + PAGE_PAD + (drawn % cols) * (chartW + gapX),
-                top - math.floor(drawn / cols) * (chartH + gapY),
-                chartW, chartH,
-                metric.label .. chartTrend(metric, series),
-                series, formatValue)
-            drawn = drawn + 1
+        -- Drawn even when there is nothing in it. These are the charts the role
+        -- is meant to have, so a missing one has to say so rather than leaving
+        -- a hole in the grid: damage taken in particular is absent from every
+        -- attempt saved before it started being captured. Deaths are exempt --
+        -- there, all zeroes is the answer, not a gap.
+        local note = chartTrend(metric, series)
+        if maxV <= 0 and metric.key ~= "deaths" then
+            note = "  |cff999999(non rilevato)|r"
         end
+
+        local formatValue
+        if metric.kind == "rate" then
+            formatValue = function(v) return MCA:FormatMetricValue(v) end
+        else
+            formatValue = function(v) return tostring(math.floor(v or 0)) end
+        end
+
+        self:DrawBarChart(parent,
+            PAGE_X + PAGE_PAD + (drawn % cols) * (chartW + gapX),
+            top - math.floor(drawn / cols) * (chartH + gapY),
+            chartW, chartH,
+            metric.label .. note,
+            series, formatValue)
+        drawn = drawn + 1
     end
 
     y = top - math.ceil(drawn / cols) * (chartH + gapY)
