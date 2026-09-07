@@ -89,9 +89,45 @@ computeLayout()
 -- computeLayout() runs when this file loads, before saved variables exist, so
 -- it falls back to the default share. Called again once the DB is up to pick
 -- up a stored size.
-function MCA:RefreshLayout()
+-- Resize the window keeping its TOP-LEFT corner exactly where it is.
+--
+-- Everything inside is anchored from that corner, so nothing shifts under the
+-- cursor. With the frame anchored by its CENTER the left edge crept outward as
+-- the window grew, the size slider crept with it, and the mouse -- which had
+-- not moved -- was suddenly further along the track: the value climbed, the
+-- window grew again, and one nudge slammed it from the minimum to 100%.
+--
+-- While a drag is in progress the corner is left alone even if the window runs
+-- past the edge of the screen; moving it would restart that same feedback. It
+-- is pulled back on screen when the drag ends.
+local function applyFrameSize(keepOnScreen)
+    local f = _G.MCAFrame
+    if not f then return end
+
+    local left, top = f:GetLeft(), f:GetTop()
+    if not left or not top then
+        f:SetSize(FRAME_W, FRAME_H)
+        return
+    end
+
+    if keepOnScreen and SCREEN_W and SCREEN_H then
+        left = math.max(0, math.min(left, SCREEN_W - FRAME_W))
+        top = math.min(SCREEN_H, math.max(top, FRAME_H))
+    end
+
+    f:ClearAllPoints()
+    f:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+    f:SetSize(FRAME_W, FRAME_H)
+
+    if RaidPulseDB then
+        RaidPulseDB.framePos = {point = "TOPLEFT", relPoint = "BOTTOMLEFT", x = left, y = top}
+    end
+end
+
+-- `dragging` skips the on-screen clamp; see applyFrameSize.
+function MCA:RefreshLayout(dragging)
     computeLayout()
-    if _G.MCAFrame then _G.MCAFrame:SetSize(FRAME_W, FRAME_H) end
+    applyFrameSize(not dragging)
 end
 
 -- Resize without a reload. The frame is resized rather than destroyed: it is
@@ -104,7 +140,7 @@ end
 function MCA:PreviewWindowShare(share)
     RaidPulseDB.config = RaidPulseDB.config or {}
     RaidPulseDB.config.windowShare = math.max(0.4, math.min(1.0, tonumber(share) or WINDOW_SHARE_DEFAULT))
-    self:RefreshLayout()
+    self:RefreshLayout(true)
     return FRAME_W, FRAME_H
 end
 
@@ -437,12 +473,21 @@ function MCA:Slider(parent, point, w, minV, maxV, value, onChange, onRelease)
     -- took the whole rest of the settings page down with it.
     local slider = self:AcquireFrame("Slider", parent, "BackdropTemplate", "slider")
     slider:SetPoint(unpack(point))
-    slider:SetSize(w, 18)
+    slider:SetSize(w, 16)
     slider:SetOrientation("HORIZONTAL")
 
-    -- Style once and let it ride along with the pooled frame.
+    -- Style once and let it ride along with the pooled frame. A flat bar cut
+    -- from WHITE8X8 rather than Blizzard's rounded slider knob: the knob is
+    -- drawn at its own proportions and reads as a bead on a string next to
+    -- the squared-off panels around it.
     if not slider.rpStyled then
-        slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+        slider:SetThumbTexture("Interface\\Buttons\\WHITE8X8")
+        local thumb = slider:GetThumbTexture()
+        if thumb then
+            thumb:SetSize(12, 22)
+            local a = self:UIColor("accent")
+            thumb:SetVertexColor(a[1], a[2], a[3], 1)
+        end
         slider.rpStyled = true
     end
     self:SetBackdropSolid(slider, {0.05,0.05,0.06,0.9}, {0.30,0.31,0.33,1})
@@ -2150,7 +2195,17 @@ function MCA:DrawFullPage(root, data)
                 -- On release: reflow the contents at the new measurements.
                 MCA:SetWindowShare(pct / 100)
             end)
-        y = y - 34
+        y = y - 20
+
+        -- The track starts at the minimum, not at zero, so a thumb sitting
+        -- hard left means "as small as it goes" rather than "stuck". Without
+        -- the two end labels that reads as a bug.
+        self:Text(child, minPct .. "%", "GameFontNormalSmall",
+            {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 60, self:UIColor("gray"))
+        self:Text(child, "100%", "GameFontNormalSmall",
+            {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD + 260, y}, 60,
+            self:UIColor("gray"), "RIGHT")
+        y = y - 22
 
         local sw, sh = self:GetScreenUnits()
         local screenStr = (sw and sh) and string.format("%dx%d unita'", sw, sh)
@@ -2166,14 +2221,16 @@ function MCA:DrawFullPage(root, data)
                 WINDOW_MIN_W, WINDOW_MIN_H, screenStr)
         else
             hint = string.format(
-                "%d%% - 100%% dello schermo (%s). Il contenuto si riadatta quando rilasci.",
-                minPct, screenStr)
+                "Il minimo e' %d%% (%dx%d): sotto quella misura le colonne delle tabelle "
+                .. "verrebbero tagliate. Schermo: %s. La finestra cresce dall'angolo in "
+                .. "alto a sinistra e il contenuto si riadatta quando rilasci.",
+                minPct, WINDOW_MIN_W, WINDOW_MIN_H, screenStr)
         end
 
         self:Text(child, hint, "GameFontNormalSmall",
             {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 620,
             self:UIColor("gray"))
-        y = y - 40
+        y = y - 56
 
         sectionHeader("Report")
 

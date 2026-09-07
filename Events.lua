@@ -18,6 +18,11 @@ local events = {
     "PLAYER_DEAD",
     "PLAYER_LEAVING_WORLD",
     "UNIT_SPELLCAST_SUCCEEDED",
+    -- The window is measured in UI units, so it has to be re-measured whenever
+    -- the number of units on screen changes. ElvUI in particular sets the UI
+    -- scale well after our own ADDON_LOADED.
+    "UI_SCALE_CHANGED",
+    "DISPLAY_SIZE_CHANGED",
     -- COMBAT_LOG_EVENT_UNFILTERED intentionally NOT registered here.
     -- In patch 12.0.7 (Midnight) registering CLEU from a non-Blizzard addon
     -- raises "Frame:RegisterEvent() forbidden". The popup is cosmetic (the
@@ -78,6 +83,10 @@ function MCA:ADDON_LOADED(addonName)
 end
 
 function MCA:PLAYER_LOGIN()
+    -- Measured again here, not just at ADDON_LOADED: that early, UIParent
+    -- still reports a provisional size, so the stored share was applied to
+    -- the wrong screen and the window came up clamped at its minimum.
+    if self.RefreshLayout then self:RefreshLayout() end
     self:DetectElvUI()
     if self.InitInspectSpec then self:InitInspectSpec() end
     self:UpdateRoster()
@@ -184,6 +193,18 @@ function MCA:PLAYER_LEAVING_WORLD()
     end
 end
 
+
+-- A changed UI scale changes how many units the screen is, so the window's
+-- share of it has to be recomputed. Redraw only if it is open: the contents
+-- are laid out against the measurements too.
+function MCA:UI_SCALE_CHANGED()
+    if self.RefreshLayout then self:RefreshLayout() end
+    if _G.MCAFrame and _G.MCAFrame:IsShown() and self.BuildDashboard then
+        self:BuildDashboard(self:GetLastAvailableReport())
+    end
+end
+
+MCA.DISPLAY_SIZE_CHANGED = MCA.UI_SCALE_CHANGED
 
 function MCA:PLAYER_REGEN_DISABLED()
     if self.HideRaidBuffWindowForPull then self:HideRaidBuffWindowForPull() elseif self.StopRaidBuffLiveTracking then self:StopRaidBuffLiveTracking(true) end
