@@ -410,11 +410,24 @@ end
 -- the capture is skipped outright when none matches.
 function MCA:GetDamageTakenMeterType()
     if not (Enum and Enum.DamageMeterType) then return nil end
+
     for _, key in ipairs({"DamageTaken", "DamageReceived", "Taken", "DamageTakenPerSecond"}) do
         if Enum.DamageMeterType[key] ~= nil then
             return Enum.DamageMeterType[key], key
         end
     end
+
+    -- Nothing matched the names this was written against, so fall back to
+    -- whatever the client calls it. Healing taken is excluded explicitly:
+    -- it also matches "taken" and is a different meter entirely.
+    for key, value in pairs(Enum.DamageMeterType) do
+        local name = tostring(key):lower()
+        if (name:find("taken", 1, true) or name:find("received", 1, true))
+           and not name:find("heal", 1, true) then
+            return value, key
+        end
+    end
+
     return nil
 end
 
@@ -488,7 +501,11 @@ function MCA:GetBlizzardDamageMeterSession(sessionID, meterType)
     return nil
 end
 
-function MCA:ApplyBlizzardDamageMeterSources(session, bucketName, metricField, totalField)
+-- `acceptTotalOnly` keeps a source whose per-second figure is zero but whose
+-- total is not. The DPS and HPS buckets must not do that -- there a zero rate
+-- means the meter had nothing for that player -- but a total-only damage-taken
+-- source is still the number the tank charts want.
+function MCA:ApplyBlizzardDamageMeterSources(session, bucketName, metricField, totalField, acceptTotalOnly)
     if not self.session or type(session) ~= "table" or type(session.combatSources) ~= "table" then return 0 end
 
     self.session.blizzard = self.session.blizzard or { dps = {}, hps = {} }
@@ -505,7 +522,9 @@ function MCA:ApplyBlizzardDamageMeterSources(session, bucketName, metricField, t
             local amountPerSecond = tonumber(source.amountPerSecond or source.dps or source.hps or 0) or 0
             local totalAmount = tonumber(source.totalAmount or source.total or 0) or 0
 
-            if amountPerSecond <= 0 then return false end
+            if amountPerSecond <= 0 and not (acceptTotalOnly and totalAmount > 0) then
+                return false
+            end
 
             local sourceName = self:GetSafeDamageMeterString(source, "name")
             local classFilename = self:GetSafeDamageMeterString(source, "classFilename")
@@ -717,7 +736,20 @@ function MCA:CaptureDamageMeterStats()
     if takenType then
         takenApplied = self:ApplyBlizzardDamageMeterSources(
             self:GetBlizzardDamageMeterSession(sessionID, takenType),
-            "taken", "blizzardDtps", "blizzardDamageTaken")
+            "taken", "blizzardDtps", "blizzardDamageTaken", true)
+    end
+
+    -- Said once per login rather than once per pull: on a client that does not
+    -- expose the meter this would otherwise repeat after every fight. Only
+    -- raised when DPS did come through, so it points at the damage-taken meter
+    -- specifically and not at a capture that failed as a whole.
+    if takenApplied == 0 and (dpsApplied or 0) > 0 and not self.takenCaptureWarned then
+        self.takenCaptureWarned = true
+        if takenType then
+            self:Print("Damage taken: il meter esiste ma non ha restituito sorgenti. /rp meter per i dettagli.")
+        else
+            self:Print("Damage taken: questo client non espone il meter, i grafici tank resteranno vuoti.")
+        end
     end
 
     self.session.blizzard.dpsApplied = dpsApplied
