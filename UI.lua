@@ -1088,7 +1088,7 @@ end
 
 
 
-function MCA:DrawPlayerTable(parent, data, singlePlayer, y)
+function MCA:DrawPlayerTable(parent, data, y)
     -- Columns are spread across the full page width. They used to be packed
     -- into the left 540px with the last one stretching to the edge, which left
     -- "Parse" floating alone in the middle of a 500px column.
@@ -1102,39 +1102,19 @@ function MCA:DrawPlayerTable(parent, data, singlePlayer, y)
         parse  = {x=890, w=158, justify="CENTER"},
     }
 
-    -- Detail view drops the metric column; Parse takes its slot so the layout
-    -- does not shift between the list and the single-player view.
-    local headers
-    if singlePlayer then
-        headers = {
-            {label="#",      x=cols.num.x,    w=cols.num.w,    justify="CENTER"},
-            {label="Player", x=cols.player.x, w=cols.player.w},
-            {label="Classe", x=cols.class.x,  w=cols.class.w},
-            {label="Ruolo",  x=cols.role.x,   w=cols.role.w,   justify="CENTER"},
-            {label="Morti",  x=cols.deaths.x, w=cols.deaths.w, justify="CENTER"},
-            {label="Parse",  x=cols.metric.x, w=cols.metric.w, justify="CENTER"},
-        }
-    else
-        headers = {
-            {label="#",       x=cols.num.x,    w=cols.num.w,    justify="CENTER"},
-            {label="Player",  x=cols.player.x, w=cols.player.w},
-            {label="Classe",  x=cols.class.x,  w=cols.class.w},
-            {label="Ruolo",   x=cols.role.x,   w=cols.role.w,   justify="CENTER"},
-            {label="Morti",   x=cols.deaths.x, w=cols.deaths.w, justify="CENTER"},
-            {label="DPS/HPS", x=cols.metric.x, w=cols.metric.w, justify="CENTER"},
-            {label="Parse",   x=cols.parse.x,  w=cols.parse.w,  justify="CENTER"},
-        }
-    end
+    local headers = {
+        {label="#",       x=cols.num.x,    w=cols.num.w,    justify="CENTER"},
+        {label="Player",  x=cols.player.x, w=cols.player.w},
+        {label="Classe",  x=cols.class.x,  w=cols.class.w},
+        {label="Ruolo",   x=cols.role.x,   w=cols.role.w,   justify="CENTER"},
+        {label="Morti",   x=cols.deaths.x, w=cols.deaths.w, justify="CENTER"},
+        {label="DPS/HPS", x=cols.metric.x, w=cols.metric.w, justify="CENTER"},
+        {label="Parse",   x=cols.parse.x,  w=cols.parse.w,  justify="CENTER"},
+    }
 
-    local list
-    if singlePlayer then
-        list = {}
-        if self.selectedPlayer then table.insert(list, self.selectedPlayer) end
-    else
-        list = self:BuildPlayerList(data)
-        -- Populate mcaRating with the same values the Riepilogo role tables use.
-        if self.CalculateRoleRatings then self:CalculateRoleRatings(list) end
-    end
+    local list = self:BuildPlayerList(data)
+    -- Populate mcaRating with the same values the Riepilogo role tables use.
+    if self.CalculateRoleRatings then self:CalculateRoleRatings(list) end
 
     local rows = {}
     for i, p in ipairs(list) do
@@ -1152,19 +1132,16 @@ function MCA:DrawPlayerTable(parent, data, singlePlayer, y)
              color=(p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white")},
         }
 
-        if singlePlayer then
-            row[#row + 1] = {x=cols.metric.x, w=cols.metric.w, text=parseText,
-                             color=parseColor, justify="CENTER", font="GameFontNormal"}
-        else
-            row[#row + 1] = {x=cols.metric.x, w=cols.metric.w,
-                             text=self:FormatMetricValue(self:GetFightMetric(p)), justify="CENTER"}
-            row[#row + 1] = {x=cols.parse.x, w=cols.parse.w, text=parseText,
-                             color=parseColor, justify="CENTER", font="GameFontNormal"}
-            row.onClick = function()
-                MCA.selectedPlayer = p
-                MCA.activeTab = "playerDetail"
-                MCA:BuildDashboard(data)
-            end
+        row[#row + 1] = {x=cols.metric.x, w=cols.metric.w,
+                         text=self:FormatMetricValue(self:GetFightMetric(p)), justify="CENTER"}
+        row[#row + 1] = {x=cols.parse.x, w=cols.parse.w, text=parseText,
+                         color=parseColor, justify="CENTER", font="GameFontNormal"}
+
+        -- Opens the per-player charts, not a one-row restatement of this row.
+        row.onClick = function()
+            MCA.selectedPlayer = p
+            MCA.activeTab = "playerDetail"
+            MCA:BuildDashboard(data)
         end
 
         rows[#rows + 1] = row
@@ -2147,6 +2124,208 @@ function MCA:DrawComparePage(parent, data, y)
     return y - 40
 end
 
+-- ---------------------------------------------------------------------------
+-- Player detail.
+--
+-- Clicking a player used to open a one-row table restating what the list above
+-- already said. What is worth knowing about a player mid-raid is whether this
+-- pull went better or worse than the last one, so the page charts their
+-- attempts against each other instead.
+-- ---------------------------------------------------------------------------
+
+-- Past this the columns are too narrow to label, so the oldest attempts drop
+-- off rather than being squeezed.
+local PLAYER_CHART_MAX_BARS = 12
+
+-- Every saved attempt on this fight, by this group, in which the player
+-- appears -- oldest first, so the chart reads left to right in time.
+--
+-- Scoped to one boss and one group for the same reason the comparison tab is:
+-- a pull of another boss, or the same boss with a different raid, is not the
+-- same measurement.
+function MCA:GetPlayerAttempts(playerName, data)
+    if not playerName or not data or not data.boss then return {} end
+
+    local candidates = self:GetComparisonCandidates(data.boss, data.groupID)
+    local out = {}
+    for i = #candidates, 1, -1 do          -- candidates arrive newest first
+        local player = (candidates[i].players or {})[playerName]
+        if player then out[#out + 1] = {report = candidates[i], player = player} end
+    end
+
+    while #out > PLAYER_CHART_MAX_BARS do table.remove(out, 1) end
+    return out
+end
+
+-- A column chart built from plain textures. WoW has no canvas and no charting
+-- widget, and for a dozen pulls sized rectangles are the entire job. The
+-- textures belong to the card frame, so they are recycled along with it.
+function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue)
+    local card = self:Panel(parent, {"TOPLEFT", parent, "TOPLEFT", x, y}, w, h)
+
+    self:Text(card, title, "GameFontNormal",
+        {"TOPLEFT", card, "TOPLEFT", 10, -8}, w - 20, self:UIColor("accent"))
+
+    local maxV = 0
+    for _, point in ipairs(series) do maxV = math.max(maxV, point.value or 0) end
+
+    -- Room kept above the plot for the title and the value labels, and below
+    -- it for the attempt times.
+    local baseline = -(h - 24)
+    local plotH = h - 70
+
+    local axis = self:AcquireTexture(card, "ARTWORK")
+    axis:SetColorTexture(0.30, 0.31, 0.33, 1)
+    axis:SetPoint("TOPLEFT", card, "TOPLEFT", 10, baseline)
+    axis:SetSize(w - 20, 1)
+
+    local slot = (w - 20) / math.max(#series, 1)
+    local barW = math.max(5, math.min(34, slot - 10))
+
+    for i, point in ipairs(series) do
+        local value = point.value or 0
+        local barH = 1
+        if maxV > 0 then barH = math.max(1, math.floor(value / maxV * plotH)) end
+
+        local cx = 10 + (i - 0.5) * slot
+        local c = point.color or self:UIColor("blue")
+
+        local bar = self:AcquireTexture(card, "ARTWORK")
+        -- The pull open right now is drawn solid and the rest dimmed, so the
+        -- one being read is findable without a legend entry per bar.
+        bar:SetColorTexture(c[1], c[2], c[3], point.current and 1 or 0.5)
+        bar:SetPoint("BOTTOMLEFT", card, "TOPLEFT", cx - barW / 2, baseline + 1)
+        bar:SetSize(barW, barH)
+
+        self:Text(card, formatValue(value), "GameFontNormalSmall",
+            {"BOTTOM", card, "TOPLEFT", cx, baseline + barH + 3}, slot,
+            point.current and self:UIColor("white") or self:UIColor("gray"), "CENTER")
+
+        self:Text(card, point.label or "", "GameFontNormalSmall",
+            {"TOP", card, "TOPLEFT", cx, baseline - 5}, slot,
+            self:UIColor("gray"), "CENTER")
+    end
+
+    return card
+end
+
+-- Damage reads as the player's class colour, healing as healing, and the two
+-- counts keep the colours they already carry elsewhere in the window.
+local function chartColor(self, metric, player)
+    if metric.key == "hps" or metric.key == "healing" then return self:UIColor("green") end
+    if metric.key == "parse" then return self:UIColor("purple") end
+    if metric.key == "deaths" then return self:UIColor("red") end
+    return self:GetClassColor(player and player.class)
+end
+
+-- The headline each chart exists to answer: better or worse than last pull.
+-- Rates carry the same 5% deadband as the comparison table, so ordinary
+-- variance is not reported as a trend.
+local function chartTrend(metric, series)
+    local n = #series
+    if n < 2 then return "" end
+
+    local last, prev = series[n].value or 0, series[n - 1].value or 0
+
+    if metric.kind == "rate" then
+        if prev <= 0 then return "" end
+        local pct = (last - prev) / prev * 100
+        if math.abs(pct) < 5 then return "  |cff999999(stabile)|r" end
+        local good = (pct > 0) == (metric.better > 0)
+        return string.format("  |cff%s(%+.0f%% vs prec.)|r",
+            good and "55dd55" or "ff5555", pct)
+    end
+
+    local diff = last - prev
+    if diff == 0 then return "  |cff999999(invariato)|r" end
+    local good = (diff > 0) == (metric.better > 0)
+    return string.format("  |cff%s(%+d vs prec.)|r",
+        good and "55dd55" or "ff5555", diff)
+end
+
+function MCA:DrawPlayerCharts(parent, data, y)
+    local sel = self.selectedPlayer
+    if not sel or not sel.name then
+        self:Text(parent, "Seleziona un player dalla lista.", "GameFontNormal",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, 700,
+            self:UIColor("gray"))
+        return y - 40
+    end
+
+    self:Text(parent, sel.name, "GameFontHighlightLarge",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 420,
+        self:GetClassColor(sel.class))
+    y = y - 24
+
+    local attempts = self:GetPlayerAttempts(sel.name, data)
+
+    self:Text(parent, string.format("%s - %s - %d pull su %s in questo gruppo",
+            self:PrettyClass(sel.class), self:RoleShort(sel.role),
+            #attempts, tostring(data.boss or "?")),
+        "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y}, PAGE_W - 20,
+        self:UIColor("gray"))
+    y = y - 30
+
+    if #attempts < 2 then
+        self:Text(parent,
+            "Serve un secondo pull sullo stesso boss con questo gruppo perche' ci sia "
+            .. "qualcosa da confrontare. I pull di un altro gruppo raid restano separati "
+            .. "apposta: non sono la stessa misura.",
+            "GameFontNormal",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, PAGE_W - 20,
+            self:UIColor("gray"))
+        return y - 60
+    end
+
+    local cols, gapX, gapY, chartH = 2, 14, 14, 190
+    local chartW = math.floor((PAGE_W - 2 * PAGE_PAD - gapX) / cols)
+    local top, drawn = y, 0
+
+    for _, metric in ipairs(COMPARE_METRICS) do
+        local series, maxV = {}, 0
+        for _, attempt in ipairs(attempts) do
+            local value = tonumber(metric.get(self, attempt.player)) or 0
+            maxV = math.max(maxV, value)
+            series[#series + 1] = {
+                label = attemptLabel(attempt.report),
+                value = value,
+                color = chartColor(self, metric, sel),
+                current = (data.historyID ~= nil and attempt.report.historyID == data.historyID)
+                    or attempt.report == data,
+            }
+        end
+
+        -- A metric this player never posted is left out rather than drawn as a
+        -- row of empty columns. Deaths are the exception: zero is the answer.
+        if maxV > 0 or metric.key == "deaths" then
+            local formatValue
+            if metric.kind == "rate" then
+                formatValue = function(v) return MCA:FormatMetricValue(v) end
+            else
+                formatValue = function(v) return tostring(math.floor(v or 0)) end
+            end
+
+            self:DrawBarChart(parent,
+                PAGE_X + PAGE_PAD + (drawn % cols) * (chartW + gapX),
+                top - math.floor(drawn / cols) * (chartH + gapY),
+                chartW, chartH,
+                metric.label .. chartTrend(metric, series),
+                series, formatValue)
+            drawn = drawn + 1
+        end
+    end
+
+    y = top - math.ceil(drawn / cols) * (chartH + gapY)
+
+    self:Text(parent,
+        "Barra piena = il pull aperto ora. L'ora del tentativo e' verde se kill, rossa se wipe.",
+        "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, PAGE_W - 20,
+        self:UIColor("gray"))
+    return y - 36
+end
+
 function MCA:DrawFullPage(root, data)
     local _, child, scroll = self:Scroll(root, {"TOPLEFT", root, "TOPLEFT", CONTENT_X, BODY_Y}, CONTENT_W, BODY_H, {0.018,0.020,0.022,0.65})
 
@@ -2253,10 +2432,10 @@ function MCA:DrawFullPage(root, data)
         end
 
     elseif self.activeTab == "players" then
-        y = self:DrawPlayerTable(child, data, false, y)
+        y = self:DrawPlayerTable(child, data, y)
 
     elseif self.activeTab == "playerDetail" then
-        y = self:DrawPlayerTable(child, data, true, y)
+        y = self:DrawPlayerCharts(child, data, y)
 
     elseif self.activeTab == "interrupts" then
         local panel = self:Panel(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X, y}, PAGE_W, PAGE_H)
