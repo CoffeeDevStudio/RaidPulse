@@ -1629,13 +1629,23 @@ function MCA:DrawPageTable(parent, headers, rows, y)
         -- A highlighted row is lifted clear of the alternating stripes and given
         -- a visible border, so finding yourself in a 25-name table is a glance
         -- rather than a search.
+        local border = rowData.highlight and {0.45,0.47,0.50,1} or {0.12,0.13,0.14,1}
         if rowData.highlight then
-            self:SetBackdropSolid(row, {0.20,0.21,0.23,0.95}, {0.45,0.47,0.50,1})
+            self:SetBackdropSolid(row, {0.20,0.21,0.23,0.95}, border)
         else
-            self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+            self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), border)
         end
 
-        if rowData.onClick then row:SetScript("OnClick", rowData.onClick) end
+        if rowData.onClick then
+            row:SetScript("OnClick", rowData.onClick)
+            -- Nothing else marks a row as clickable, so the border answers on
+            -- hover. The resting colour is captured here rather than read back
+            -- inside the handler, which would return whatever hover just set.
+            row:SetScript("OnEnter", function() row:SetBackdropBorderColor(1, 0.82, 0, 1) end)
+            row:SetScript("OnLeave", function()
+                row:SetBackdropBorderColor(border[1], border[2], border[3], border[4] or 1)
+            end)
+        end
 
         for _, cell in ipairs(rowData) do
             local iconW = 0
@@ -1988,11 +1998,13 @@ function MCA:DrawComparePage(parent, data, y)
         return va > vb
     end)
 
-    -- Class comes from the most recent attempt a player appears in.
-    local classOf = {}
+    -- Taken from the most recent attempt a player appears in: the class for
+    -- the row's colour, and the row itself as the subject of the charts a
+    -- click opens.
+    local playerOf = {}
     for i = #attempts, 1, -1 do
         for _, p in pairs(attempts[i].players or {}) do
-            if p.name then classOf[p.name] = p.class end
+            if p.name then playerOf[p.name] = p end
         end
     end
 
@@ -2001,8 +2013,17 @@ function MCA:DrawComparePage(parent, data, y)
     local rows = {}
     for _, name in ipairs(names) do
         local row = {{x = nameCol.x, w = nameCol.w, text = name, font = "GameFontNormal",
-                      color = self:GetClassColor(classOf[name])}}
+                      color = self:GetClassColor((playerOf[name] or {}).class)}}
         row.highlight = (name == myName)
+
+        -- Opens this player's charts on the fight and group being compared
+        -- here, rather than on whatever report happens to be loaded.
+        row.onClick = function()
+            MCA.selectedPlayer = playerOf[name]
+            MCA.playerFightKey = fight.key
+            MCA.activeTab = "playerDetail"
+            MCA:BuildDashboard(MCA:GetLastAvailableReport())
+        end
 
         for i, r in ipairs(attempts) do
             local p = (r.players or {})[name]
