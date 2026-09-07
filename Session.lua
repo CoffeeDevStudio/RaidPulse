@@ -725,6 +725,40 @@ local function tryStep(self, name, ...)
     end
 end
 
+-- The Blizzard meter does not always have the finished session ready one
+-- second after ENCOUNTER_END: sometimes it does, sometimes the report comes
+-- out with every DPS cell empty, which is exactly how it presents — working
+-- for one boss and not the next.
+--
+-- The saved report is the same table SaveReportToHistory inserted, so patching
+-- it later updates the stored copy as well as the one on screen.
+function MCA:RetryDamageMeterCapture(report, triesLeft)
+    if not report or (triesLeft or 0) <= 0 then return end
+    -- A new pull has started; it owns the meter now.
+    if self.session then return end
+
+    local applied = report.blizzard and (tonumber(report.blizzard.dpsApplied) or 0) > 0
+    if applied then return end
+
+    -- CaptureDamageMeterStats works on self.session, so lend it the report.
+    self.session = report
+    pcall(self.CaptureDamageMeterStats, self)
+    self.session = nil
+
+    local now = report.blizzard and (tonumber(report.blizzard.dpsApplied) or 0) > 0
+    if now then
+        self:Print("Damage meter: dati recuperati al tentativo successivo.")
+        if self.lastReport == report and _G.MCAFrame and _G.MCAFrame:IsShown() then
+            self:BuildDashboard(report)
+        end
+        return
+    end
+
+    C_Timer.After(2, function()
+        if MCA then MCA:RetryDamageMeterCapture(report, (triesLeft or 1) - 1) end
+    end)
+end
+
 function MCA:FinalizeSession(success, forceImmediate)
     if not self.session then return end
 
@@ -757,6 +791,12 @@ function MCA:FinalizeSession(success, forceImmediate)
 
     self.lastReport = report
     self:SaveReportToHistory(report)
+
+    -- If the meter had nothing ready, keep asking for a few seconds rather
+    -- than leaving the report permanently empty.
+    C_Timer.After(2, function()
+        if MCA then MCA:RetryDamageMeterCapture(report, 4) end
+    end)
     self.session = nil
     self.currentMythicBoss = nil
 

@@ -1562,11 +1562,13 @@ local COMPARE_METRICS = {
      get = function(self, p) return tonumber(p.mcaRating) or 0 end},
     {key = "deaths",     label = "Morti",     kind = "count", better = -1,
      get = function(self, p) return tonumber(p.deaths) or 0 end},
-    {key = "defensives", label = "Difensive", kind = "count", better = 1,
-     get = function(self, p) return #(p.used or {}) end},
-    {key = "interrupts", label = "Interrupt", kind = "count", better = 1,
-     get = function(self, p) return tonumber(p.blizzardInterrupts) or 0 end},
 }
+
+-- Defensives and interrupts are deliberately absent. Neither can be filled in
+-- for anyone but the local player: UNIT_SPELLCAST_SUCCEEDED does not reliably
+-- fire for other raid members and the addon sync that used to cover that gap
+-- was removed, while interrupts only ever arrive from the meter. A column of
+-- zeroes for twenty-four people is worse than not offering the comparison.
 
 function MCA:GetCompareMetric()
     for _, m in ipairs(COMPARE_METRICS) do
