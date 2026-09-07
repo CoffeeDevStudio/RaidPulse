@@ -19,6 +19,7 @@ MCA = _G.MCA
 -- These are locals reassigned by computeLayout() instead of constants, so
 -- changing the size takes effect without a reload.
 local FRAME_W, FRAME_H
+local SCREEN_W, SCREEN_H
 local MARGIN, GAP, BTN_H = 8, 16, 34
 local SIDE_X, SIDE_Y, SIDE_W, SIDE_H, SIDE_BOTTOM_GAP
 local CONTENT_BOTTOM, CONTENT_X, CONTENT_W
@@ -47,10 +48,16 @@ local function computeLayout()
         share = math.max(0.4, math.min(1.0, tonumber(RaidPulseDB.config.windowShare)))
     end
 
+    SCREEN_W, SCREEN_H = uiW, uiH
+
     FRAME_W, FRAME_H = WINDOW_MIN_W, WINDOW_MIN_H
     if uiW and uiH and uiW > 0 and uiH > 0 then
-        FRAME_W = math.floor(math.max(WINDOW_MIN_W, math.min(WINDOW_MAX_W, uiW * share)))
-        FRAME_H = math.floor(math.max(WINDOW_MIN_H, math.min(WINDOW_MAX_H, uiH * share)))
+        -- The screen is the last word. A window wider than the display puts
+        -- its own title bar out of reach, which is worse than a cramped table.
+        FRAME_W = math.floor(math.min(uiW,
+            math.max(WINDOW_MIN_W, math.min(WINDOW_MAX_W, uiW * share))))
+        FRAME_H = math.floor(math.min(uiH,
+            math.max(WINDOW_MIN_H, math.min(WINDOW_MAX_H, uiH * share))))
     end
 
     SIDE_X, SIDE_Y = MARGIN, -MARGIN
@@ -110,13 +117,31 @@ function MCA:GetWindowSize()
     return FRAME_W, FRAME_H
 end
 
+-- UIParent measured in UI units, which is what the window is sized in. Not
+-- pixels: at a UI scale of 0.53 a 2560-wide display is ~4800 units across.
+function MCA:GetScreenUnits()
+    return SCREEN_W, SCREEN_H
+end
+
+-- The smallest share that still produces a usable window. Every table is
+-- written against a 1108-unit page, so under WINDOW_MIN_W columns start
+-- falling off the right edge and the size clamps. On a small screen that floor
+-- can already be most of the display, and the slider offers that range instead
+-- of percentages that would all clamp to the same size.
+function MCA:GetMinWindowShare()
+    if not (SCREEN_W and SCREEN_H and SCREEN_W > 0 and SCREEN_H > 0) then return 0.4 end
+    return math.max(0.4, math.min(1.0,
+        math.max(WINDOW_MIN_W / SCREEN_W, WINDOW_MIN_H / SCREEN_H)))
+end
+
 function MCA:SetWindowShare(share)
     RaidPulseDB.config = RaidPulseDB.config or {}
     RaidPulseDB.config.windowShare = math.max(0.4, math.min(1.0, tonumber(share) or WINDOW_SHARE_DEFAULT))
 
     self:RefreshLayout()
-    self:Print(string.format("Finestra al %d%% dello schermo (%dx%d unita').",
-        math.floor(RaidPulseDB.config.windowShare * 100 + 0.5), FRAME_W, FRAME_H))
+    self:Print(string.format("Finestra al %d%% dello schermo (%dx%d unita', schermo %s).",
+        math.floor(RaidPulseDB.config.windowShare * 100 + 0.5), FRAME_W, FRAME_H,
+        (SCREEN_W and SCREEN_H) and string.format("%dx%d", SCREEN_W, SCREEN_H) or "?"))
     self:BuildDashboard(self:GetLastAvailableReport())
 end
 
@@ -407,7 +432,10 @@ local TRANSPARENT = {0, 0, 0, 0}
 -- reaches for its labels through globals derived from the frame's name, and
 -- pooled frames are deliberately unnamed. The labels are ours instead.
 function MCA:Slider(parent, point, w, minV, maxV, value, onChange, onRelease)
-    local slider = self:AcquireFrame("Slider", parent, nil, "slider")
+    -- BackdropTemplate rather than a bare Slider: SetBackdrop arrives with
+    -- that template's mixin, and calling it on a plain Slider raises — which
+    -- took the whole rest of the settings page down with it.
+    local slider = self:AcquireFrame("Slider", parent, "BackdropTemplate", "slider")
     slider:SetPoint(unpack(point))
     slider:SetSize(w, 18)
     slider:SetOrientation("HORIZONTAL")
@@ -419,13 +447,18 @@ function MCA:Slider(parent, point, w, minV, maxV, value, onChange, onRelease)
     end
     self:SetBackdropSolid(slider, {0.05,0.05,0.06,0.9}, {0.30,0.31,0.33,1})
 
+    -- Unhook first. A recycled slider still carries the previous render's
+    -- handler, and SetMinMaxValues can clamp the current value into range,
+    -- which would fire that handler with a closure over a fontstring that has
+    -- since been handed to something else.
+    slider:SetScript("OnValueChanged", nil)
+
     slider:SetMinMaxValues(minV, maxV)
     slider:SetValueStep(1)
     if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
 
-    -- Set the value before wiring the handler, or positioning the thumb would
-    -- itself count as a change and apply a resize on every render.
-    slider:SetScript("OnValueChanged", nil)
+    -- The value goes in while nothing is listening, or positioning the thumb
+    -- would itself count as a change and apply a resize on every render.
     slider:SetValue(value)
     slider:SetScript("OnValueChanged", function(_, v)
         if onChange then onChange(math.floor(v + 0.5)) end
@@ -2102,8 +2135,12 @@ function MCA:DrawFullPage(root, data)
             self:UIColor("white"))
         y = y - 26
 
+        local minPct = math.ceil(self:GetMinWindowShare() * 100)
+        local curPct = math.min(100, math.max(minPct,
+            math.floor(self:GetWindowShare() * 100 + 0.5)))
+
         self:Slider(child, {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 320,
-            40, 100, math.floor(self:GetWindowShare() * 100 + 0.5),
+            minPct, 100, curPct,
             function(pct)
                 -- Live: the window grows as the thumb moves.
                 local nw, nh = MCA:PreviewWindowShare(pct / 100)
@@ -2115,8 +2152,26 @@ function MCA:DrawFullPage(root, data)
             end)
         y = y - 34
 
-        self:Text(child, "40% - 100% dello schermo. Il contenuto si riadatta quando rilasci.",
-            "GameFontNormalSmall", {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 500,
+        local sw, sh = self:GetScreenUnits()
+        local screenStr = (sw and sh) and string.format("%dx%d unita'", sw, sh)
+            or "dimensione sconosciuta"
+
+        local hint
+        if minPct >= 99 then
+            -- Saying "40%-100%" here would be a lie: everything below the
+            -- floor clamps to the same window, so the cursor would look broken.
+            hint = string.format(
+                "Le tabelle richiedono almeno %dx%d e il tuo schermo e' %s, "
+                .. "quindi il cursore ha poco margine.",
+                WINDOW_MIN_W, WINDOW_MIN_H, screenStr)
+        else
+            hint = string.format(
+                "%d%% - 100%% dello schermo (%s). Il contenuto si riadatta quando rilasci.",
+                minPct, screenStr)
+        end
+
+        self:Text(child, hint, "GameFontNormalSmall",
+            {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 620,
             self:UIColor("gray"))
         y = y - 40
 
@@ -2570,7 +2625,8 @@ function MCA:BuildInterruptPage(parent, report)
 
     local y = -42
     for i, p in ipairs(list) do
-        local row = self:AcquireFrame("Frame", box)
+        -- BackdropTemplate: SetBackdropSolid below needs the mixin it carries.
+        local row = self:AcquireFrame("Frame", box, "BackdropTemplate")
         row:SetPoint("TOPLEFT", box, "TOPLEFT", 8, y)
         row:SetPoint("TOPRIGHT", box, "TOPRIGHT", -8, y)
         row:SetHeight(28)
