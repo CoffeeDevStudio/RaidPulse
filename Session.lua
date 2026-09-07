@@ -617,6 +617,99 @@ end
 -- Diagnostic for /rp meter. DPS arriving empty has several possible causes —
 -- no meter API, no sessions, a session that matches nothing, sources that
 -- match no roster player — and the report shows the same "-" for all of them.
+-- Matching a meter source against a saved report, the way the damage capture
+-- does it: realm stripped off the name first.
+--
+-- Deliberately not FindSessionPlayerByDamageMeterSource, which reads
+-- self.session. FinalizeSession clears that, so every lookup through it
+-- returns nil once a pull is over -- which is precisely when this command gets
+-- run. The diagnostic would have reported "no match in the roster" for every
+-- source of a capture that had in fact worked.
+local function indexReportPlayers(report)
+    local byGuid, byName = {}, {}
+    for _, p in pairs((report and report.players) or {}) do
+        if p.guid then byGuid[p.guid] = p end
+        if p.name then byName[p.name] = p end
+    end
+    return byGuid, byName
+end
+
+local function matchSource(self, source, byGuid, byName)
+    local shortName, fullName = self:GetSafeDamageMeterSourceShortName(source)
+    local guid = source.sourceGUID or source.guid or source.unitGUID
+    return (guid and byGuid[guid])
+        or (shortName and byName[shortName])
+        or (fullName and byName[fullName])
+end
+
+-- Interrupts come off their own meter, and CaptureBlizzardInterrupts matches
+-- its sources to players differently from the damage capture: it looks up the
+-- meter's name verbatim, while the damage path strips the realm off it first.
+-- A meter that reports "Coffettino-Nemesis" against a roster keyed on
+-- "Coffettino" therefore matches nobody -- which looks exactly like a meter
+-- that returned nothing at all. Both lookups are printed on the same sources
+-- so the two can be told apart.
+--
+-- FindSessionPlayerByDamageMeterSource is deliberately not used here: it reads
+-- self.session, which is nil whenever this is run outside a pull, and would
+-- report NO for every source for reasons that have nothing to do with the
+-- meter. The short-name lookup below is the part of it that matters.
+local function reportInterruptMeter(self, sid, report)
+    if not (Enum and Enum.DamageMeterType and Enum.DamageMeterType.Interrupts) then
+        self:Print("  Interrupt: Enum.DamageMeterType.Interrupts assente su questo client.")
+        return
+    end
+
+    -- Exactly the lookup the capture performs, so this cannot succeed where
+    -- the real thing fails.
+    local data = self:GetBlizzardDamageMeterSession(sid, Enum.DamageMeterType.Interrupts)
+    if type(data) ~= "table" then
+        self:Print("  Interrupt: GetBlizzardDamageMeterSession non ha restituito una tabella.")
+        return
+    end
+    if type(data.combatSources) ~= "table" then
+        self:Print("  Interrupt: la sessione non espone combatSources.")
+        return
+    end
+
+    self:Print(string.format("  Interrupt: %d sorgenti nel meter", #data.combatSources))
+
+    local byGuid, byName = indexReportPlayers(report)
+
+    for index, source in ipairs(data.combatSources) do
+        if index > 8 then
+            self:Print("    ... e altre " .. (#data.combatSources - 8))
+            break
+        end
+
+        local value = tonumber(source.totalAmount or source.amount or source.count or 0) or 0
+        local shortName, fullName = self:GetSafeDamageMeterSourceShortName(source)
+
+        -- What the capture reads today: GUID, then the name exactly as the
+        -- meter gives it.
+        local guid = source.sourceGUID or source.guid or source.unitGUID
+        local viaCapture = (guid and byGuid[guid]) or (fullName and byName[fullName])
+
+        -- The same lookup with the realm stripped, as the damage path does.
+        local viaShort = shortName and byName[shortName]
+
+        self:Print(string.format("    '%s' n=%.0f  guid=%s  capture:%s  nome-corto:%s",
+            tostring(fullName or shortName), value,
+            guid and "si" or "no",
+            viaCapture and tostring(viaCapture.name) or "NO",
+            viaShort and tostring(viaShort.name) or "NO"))
+    end
+
+    -- What actually ended up saved, which is what the tables read.
+    local stored, withValue = 0, 0
+    for _ in pairs(report.blizzardInterrupts or {}) do stored = stored + 1 end
+    for _, p in pairs(report.players or {}) do
+        if (tonumber(p.blizzardInterrupts) or 0) > 0 then withValue = withValue + 1 end
+    end
+    self:Print(string.format("  Interrupt salvati nel report: %d sorgenti, %d player con valore",
+        stored, withValue))
+end
+
 function MCA:ReportDamageMeterState()
     if not C_DamageMeter then
         self:Print("C_DamageMeter non esiste su questo client.")
@@ -680,6 +773,10 @@ function MCA:ReportDamageMeterState()
     local sid = self:FindBlizzardDamageMeterSessionID(report.boss)
     self:Print("    sessionID scelto: " .. tostring(sid))
 
+    -- Reported before the damage block below, which returns early on its own
+    -- failures and would otherwise take the interrupt diagnosis with it.
+    reportInterruptMeter(self, sid, report)
+
     local dpsType = self:GetDamageMeterEnumValue("DamageMeterType", "Dps", 1)
     local sess = self:GetBlizzardDamageMeterSession(sid, dpsType)
     if type(sess) ~= "table" then
@@ -694,11 +791,12 @@ function MCA:ReportDamageMeterState()
     end
 
     self:Print(string.format("    sorgenti: %d", #sources))
+    local byGuid, byName = indexReportPlayers(report)
     for i, src in ipairs(sources) do
         if i > 8 then break end
         local name = self:GetSafeDamageMeterString(src, "name")
         local dps = tonumber(src.amountPerSecond or src.dps or 0) or 0
-        local p = self:FindSessionPlayerByDamageMeterSource(src)
+        local p = matchSource(self, src, byGuid, byName)
         self:Print(string.format("      '%s' dps=%.0f -> %s",
             tostring(name), dps, p and ("match: " .. tostring(p.name)) or "NESSUN match nel roster"))
     end
