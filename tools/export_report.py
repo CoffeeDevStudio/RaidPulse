@@ -613,11 +613,30 @@ def select_containers(containers, wanted):
         raise SystemExit("--only %s: fuori intervallo, ci sono %d sezioni "
                          "(usa --list)" % (wanted, len(containers)))
 
+    def holds_group(box):
+        # An M+ container is addressed by its dungeon, but the addon may hand
+        # over the groupID of one run in it -- every key is its own group. Any
+        # selector the addon can produce should resolve, so a groupID that
+        # belongs to any attempt in the container counts as a match.
+        return any(str(r.get("groupID") or "").lower() == needle
+                   for r in box["reports"])
+
     hits = [b for b in containers
             if needle == selector_of(b).lower()
-            or needle in container_title(b)[2].lower()]
+            or needle in container_title(b)[2].lower()
+            or holds_group(b)]
+
     if not hits:
-        raise SystemExit("--only %s: nessuna sezione corrisponde (usa --list)" % wanted)
+        message = ["--only %s: nessuna sezione corrisponde." % wanted]
+        if re.match(r"^\d{6,}-\d+$", needle):
+            # A group id that is not in the file is almost always the run that
+            # just ended: SavedVariables are written on /reload or logout, and
+            # nothing before that is on disk to be read.
+            message.append("Sembra l'id di un gruppo: se il tentativo e' appena "
+                           "finito non e' ancora su disco.")
+            message.append("Fai /reload in gioco e riprova.")
+        message.append("Con --list vedi cosa c'e'.")
+        raise SystemExit(" ".join(message))
     return hits
 
 
@@ -898,6 +917,14 @@ def main():
         for box in chosen:
             print("  sezione: %s" % container_title(box)[2])
     print("Wrote %s (%.0f KB)" % (out_path, os.path.getsize(out_path) / 1024))
+
+    # The addon cannot read its own absolute path, so the command it hands you
+    # is relative and only works from one folder. This is the missing half:
+    # run once, paste once, and from then on Esporta Report gives a command
+    # that works from wherever the terminal happens to be.
+    print("")
+    print("In gioco, una volta sola:")
+    print("  /rp toolpath %s" % os.path.abspath(__file__))
 
 
 if __name__ == "__main__":

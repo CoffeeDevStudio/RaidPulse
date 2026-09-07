@@ -194,11 +194,21 @@ function MCA:ShowExportWindow(data)
 
     local selector = self:GetExportSelector(data)
     f.title:SetText("Esporta " .. tostring((data and data.boss) or "report"))
+    -- Two things the command needs and neither is obvious: the data has to be
+    -- on disk, and a relative path only resolves from one folder. The script
+    -- prints the /rp toolpath line that removes the second condition.
+    local stored = RaidPulseDB.config and RaidPulseDB.config.exportToolPath
+    local where = stored and "Copialo con ctrl+C."
+        or "Copialo con ctrl+C ed eseguilo dalla cartella _retail_ (lo script stampa "
+           .. "un comando /rp toolpath che toglie questo vincolo)."
+
     f.hint:SetText(selector
         and ("Comando per generare la pagina di questo "
             .. (((data.type or "") == "M+") and "dungeon" or "gruppo raid")
-            .. ". Copialo con ctrl+C ed eseguilo dalla cartella _retail_.")
-        or "Comando per generare la pagina con tutto lo storico. Copialo con ctrl+C.")
+            .. ". Serve un /reload prima: i dati arrivano su disco solo allora. "
+            .. where)
+        or ("Comando per generare la pagina con tutto lo storico. Serve un /reload "
+            .. "prima: i dati arrivano su disco solo allora. " .. where))
 
     f.text:SetText(self:GetExportText(data))
     f.text:ClearFocus()
