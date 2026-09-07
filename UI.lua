@@ -2560,6 +2560,61 @@ function MCA:DrawFullPage(root, data)
             self:UIColor("gray"))
         y = y - 56
 
+        sectionHeader("Tasti rapidi")
+
+        for _, action in ipairs(MCA.KEYBIND_ACTIONS or {}) do
+            local bound = self:GetKeybind(action.key)
+            local capturing = (self.keybindCapturing == action.key)
+
+            self:Text(child, action.label, "GameFontNormal",
+                {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 240,
+                self:UIColor("white"))
+
+            local keyText, keyColor
+            if capturing then
+                keyText, keyColor = "Premi un tasto (ESC annulla)", self:UIColor("accent")
+            elseif bound then
+                keyText, keyColor = bound, self:UIColor("green")
+            else
+                keyText, keyColor = "non assegnato", self:UIColor("gray")
+            end
+            self:Text(child, keyText, "GameFontNormal",
+                {"TOPLEFT", child, "TOPLEFT", 270, y}, 200, keyColor)
+
+            if capturing then
+                self:Button(child, "Annulla", {"TOPLEFT", child, "TOPLEFT", 490, y + 4}, 110, 22,
+                    function()
+                        MCA:StopKeybindCapture()
+                        MCA:BuildDashboard(data)
+                    end)
+            else
+                self:Button(child, "Imposta", {"TOPLEFT", child, "TOPLEFT", 490, y + 4}, 110, 22,
+                    function()
+                        MCA:StartKeybindCapture(action.key)
+                        MCA:BuildDashboard(data)
+                    end)
+                if bound then
+                    self:Button(child, "Rimuovi", {"TOPLEFT", child, "TOPLEFT", 610, y + 4}, 110, 22,
+                        function()
+                            MCA:ClearKeybind(action.key)
+                            MCA:BuildDashboard(data)
+                        end)
+                end
+            end
+
+            y = y - 30
+        end
+
+        self:Text(child,
+            "I tasti valgono per la sessione e vengono riassegnati a ogni login: RaidPulse "
+            .. "non scrive nei keybind del personaggio, quindi disattivarlo non lascia nulla "
+            .. "indietro. Un tasto gia' occupato viene preso da RaidPulse finche' resta "
+            .. "assegnato qui, e la chat dice cosa sostituisce.",
+            "GameFontNormalSmall",
+            {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4}, 620,
+            self:UIColor("gray"))
+        y = y - 56
+
         sectionHeader("Report")
 
         local settings = {

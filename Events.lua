@@ -8,6 +8,7 @@ local events = {
     "ADDON_LOADED",
     "PLAYER_LOGIN",
     "PLAYER_REGEN_DISABLED",
+    "PLAYER_REGEN_ENABLED",
     "PLAYER_ENTERING_WORLD",
     "GROUP_ROSTER_UPDATE",
     "ENCOUNTER_START",
@@ -98,6 +99,9 @@ function MCA:PLAYER_LOGIN()
             MCA:InspectSpec_QueueGroup()
         end
     end)
+    -- Bindings live in the addon's own saved variables, not the character's
+    -- keybind file, so they have to be applied to each session.
+    if self.ApplyKeybinds then self:ApplyKeybinds() end
     if self.CreateMinimapButton then self:CreateMinimapButton() end
     self:Print("Loaded v" .. self.VERSION)
 end
@@ -205,6 +209,12 @@ function MCA:UI_SCALE_CHANGED()
 end
 
 MCA.DISPLAY_SIZE_CHANGED = MCA.UI_SCALE_CHANGED
+
+function MCA:PLAYER_REGEN_ENABLED()
+    -- SetBinding is forbidden in combat, so a keybind changed mid-pull is held
+    -- until here rather than being dropped.
+    if self.keybindsPending and self.ApplyKeybinds then self:ApplyKeybinds() end
+end
 
 function MCA:PLAYER_REGEN_DISABLED()
     if self.HideRaidBuffWindowForPull then self:HideRaidBuffWindowForPull() elseif self.StopRaidBuffLiveTracking then self:StopRaidBuffLiveTracking(true) end
