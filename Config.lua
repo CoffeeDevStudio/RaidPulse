@@ -165,7 +165,14 @@ SlashCmdList["RAIDPULSE"] = function(msg)
                 else
                     MCA:Print("  Ultimo report: " .. tostring(rep.boss) ..
                         " (encounterID " .. tostring(rep.encounterID) ..
-                        ") -> NON nel DB: rigenera BenchmarksDB per questa stagione.")
+                        ") -> NON nel DB.")
+                    -- Regenerating only helps once WarcraftLogs has enough
+                    -- ranked kills to build a curve from. On a tier nobody has
+                    -- logged yet the generator has nothing to fetch, and
+                    -- saying "regenerate" sends you on an errand that cannot
+                    -- succeed.
+                    MCA:Print("    La rigenerazione serve solo se WarcraftLogs ha gia' " ..
+                        "abbastanza log per questo tier: verifica con --probe-brackets.")
                 end
             end
         end
