@@ -1450,6 +1450,12 @@ local function reportIsKill(report)
     return (report and report.result) and true or false
 end
 
+-- How long the history delete button stays armed after the first click.
+-- Declared here, above its only user: a local declared further down the file
+-- is not in scope earlier, and the name would silently resolve to a nil
+-- global -- which the arming comparison would then blow up on.
+local HISTORY_DELETE_ARM_SECONDS = 8
+
 function MCA:DrawHistoryPage(parent)
     local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
 
@@ -1469,6 +1475,7 @@ function MCA:DrawHistoryPage(parent)
 
     local function selectFilter(value)
         MCA.historyFilter = value
+        MCA.historyDeleteArmed = nil       -- a new filter is a new question
         MCA.activeTab = "history"
         MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end
@@ -1493,16 +1500,40 @@ function MCA:DrawHistoryPage(parent)
         deleteLabel, deleteCount = "Cancella storico (" .. #history .. ")", #history
     end
 
-    self:Button(parent, deleteLabel, {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_W - 180, -50}, 180, 24, function()
+    -- Two clicks, not one. This button sits in the same row as the filters,
+    -- there is no undo, and a night of pulls is gone the moment it is pressed
+    -- by accident. The first click only arms it; the label says so, and the
+    -- arming lapses on its own so it cannot sit armed waiting for a stray
+    -- click later.
+    local armed = MCA.historyDeleteArmed
+    local isArmed = armed and armed.filter == filter
+        and (GetTime() - (armed.at or 0)) < HISTORY_DELETE_ARM_SECONDS
+
+    self:Button(parent, isArmed and ("Confermi? " .. deleteLabel) or deleteLabel,
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_W - 180, -50}, 180, 24, function()
         if deleteCount == 0 then
             MCA:Print("Nessun report da cancellare con questo filtro.")
             return
         end
+
+        if not isArmed then
+            MCA.historyDeleteArmed = {filter = filter, at = GetTime()}
+            MCA:Print(string.format(
+                "Clicca di nuovo entro %d secondi per cancellare %d report. Non c'e' modo di annullare.",
+                HISTORY_DELETE_ARM_SECONDS, deleteCount))
+            MCA.activeTab = "history"
+            MCA:BuildDashboard(MCA:GetLastAvailableReport())
+            return
+        end
+
+        MCA.historyDeleteArmed = nil
         if filter then
             MCA:ClearHistoryByResult(filter == "kill")
         else
             MCA:ClearHistory()
         end
+        MCA:Print(string.format("Nello storico restano %d report.",
+            #(RaidPulseDB.history or {})))
         MCA.activeTab = "history"
         MCA:BuildDashboard(MCA:GetLastAvailableReport())
     end, true)
