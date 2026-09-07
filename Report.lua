@@ -158,16 +158,28 @@ function MCA:RefreshExportWindow()
             active and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
             active and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
 
-        local kills = ""
-        if entry.kind ~= "M+" then
-            kills = string.format("  %d kill / %d wipe", entry.kills,
-                entry.count - entry.kills)
+        -- A raid group is one roster, so how many took part is worth saying.
+        -- A dungeon pools runs made with different groups, so the same number
+        -- there is the union of all of them: five players, six times over,
+        -- reported as twenty-five. The key levels are what varies instead.
+        local detail
+        if entry.kind == "M+" then
+            local keys = ""
+            if entry.keyMin then
+                keys = (entry.keyMin == entry.keyMax)
+                    and string.format("  chiave +%d", entry.keyMin)
+                    or string.format("  chiavi +%d..+%d", entry.keyMin, entry.keyMax)
+            end
+            detail = string.format("%d run%s  %d completate",
+                entry.count, keys, entry.kills)
+        else
+            detail = string.format("%d tentativi  %d kill / %d wipe - %d player",
+                entry.count, entry.kills, entry.count - entry.kills, entry.playerCount)
         end
 
-        row.text:SetText(string.format("|cff%s%s|r  %s  |cff9aa0a8%d %s%s - %d player|r",
+        row.text:SetText(string.format("|cff%s%s|r  %s  |cff9aa0a8%s|r",
             active and "ffd100" or "e6e6e6",
-            entry.stamp, entry.label, entry.count,
-            entry.kind == "M+" and "run" or "tentativi", kills, entry.playerCount))
+            entry.stamp, entry.label, detail))
 
         row:SetScript("OnClick", function()
             MCA.exportSelection = entry.key

@@ -2401,6 +2401,7 @@ function MCA:GetExportGroups()
                     selector = isMplus and r.boss or tostring(r.groupID or "legacy"),
                     bossOrder = {}, bossCount = {}, players = {},
                     count = 0, kills = 0, first = 0, latest = 0,
+                    keyMin = nil, keyMax = nil,
                 }
                 byKey[key] = entry
                 order[#order + 1] = entry
@@ -2408,6 +2409,16 @@ function MCA:GetExportGroups()
 
             entry.count = entry.count + 1
             if r.result then entry.kills = entry.kills + 1 end
+
+            -- The key level is what actually varies between runs of one
+            -- dungeon; how many distinct people were in them does not mean
+            -- anything, since a key is five players and every one is a
+            -- different five.
+            local level = tonumber(tostring(r.difficulty or ""):match("^%+(%d+)$"))
+            if level then
+                entry.keyMin = math.min(entry.keyMin or level, level)
+                entry.keyMax = math.max(entry.keyMax or level, level)
+            end
 
             local epoch = tonumber(r.savedAtEpoch) or 0
             if epoch > 0 then

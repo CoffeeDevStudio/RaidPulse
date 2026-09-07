@@ -236,6 +236,9 @@ CLASS_COLORS = {
 
 KILL, WIPE = "#55dd55", "#ff5555"
 
+# A key level as the addon stores it: the difficulty string is "+12".
+KEY_LEVEL = re.compile(r"^\+(\d+)$")
+
 
 def num(value):
     try:
@@ -571,6 +574,7 @@ def container_title(box):
     players = {}
     for fight in box["fights"]:
         players.update(players_of(fight))
+    kills = sum(1 for r in reports if r.get("result"))
 
     if box["kind"] == "raid":
         same_day = when(box["first"], "%d/%m") == when(box["latest"], "%d/%m")
@@ -581,16 +585,31 @@ def container_title(box):
         if len(names) > 3:
             listed += " +%d" % (len(names) - 3)
         title = "Gruppo raid &mdash; %s" % esc(span)
+        detail = ("%d tentativi, %d kill / %d wipe, %d player"
+                  % (len(reports), kills, len(reports) - kills, len(players)))
         tag = ("Raid &middot; %s &middot; %d tentativi &middot; %d player"
                % (esc(listed), len(reports), len(players)))
         plain = "Gruppo raid %s - %s" % (span, listed)
     else:
+        # Not a player count: a key is always five, and pooling six runs made
+        # with six different groups reports twenty-five, which reads as a raid
+        # size and is not one. The key levels are what varies.
+        levels = sorted({int(m.group(1)) for m in
+                         (KEY_LEVEL.match(str(r.get("difficulty") or ""))
+                          for r in reports) if m})
+        keys = ""
+        if levels:
+            keys = (" &middot; chiave +%d" % levels[0] if len(levels) == 1
+                    else " &middot; chiavi +%d..+%d" % (levels[0], levels[-1]))
+        done = sum(1 for r in reports if r.get("result"))
         title = esc(box["fights"][0]["boss"])
-        tag = ("M+ &middot; %d run &middot; tutte le chiavi e i gruppi "
-               "&middot; %d player" % (len(reports), len(players)))
+        detail = "%d run%s, %d completate" % (
+            len(reports), keys.replace(" &middot; ", ", "), done)
+        tag = ("M+ &middot; %d run%s &middot; %d completate &middot; "
+               "%d giocatori diversi" % (len(reports), keys, done, len(players)))
         plain = "M+ %s" % box["fights"][0]["boss"]
 
-    return title, tag, plain, players
+    return title, tag, plain, players, detail
 
 
 def selector_of(box):
@@ -772,7 +791,7 @@ def render(db, sv_path, containers, total_sections=None, filter_note=""):
 
     for box in containers:
         reports = box["reports"]
-        title, tag, _, all_players = container_title(box)
+        title, tag, _, all_players, _detail = container_title(box)
 
         out.append("<section class='fight'><h2>%s<span class='tag'>%s</span></h2>"
                    % (title, tag))
@@ -878,10 +897,9 @@ def main():
     if args.list:
         print("%s — %d report, %d sezioni\n" % (sv, len(history), len(containers)))
         for i, box in enumerate(containers, start=1):
-            _, _, plain, players = container_title(box)
-            print("%3d  %-52s %2d tentativi  %2d player   [%s]"
-                  % (i, plain[:52], len(box["reports"]), len(players),
-                     selector_of(box)))
+            _, _, plain, _players, detail = container_title(box)
+            print("%3d  %-46s %-38s [%s]"
+                  % (i, plain[:46], detail, selector_of(box)))
         print("\nGenerane una sola:  --only <numero>   (oppure il groupID, "
               "o parte del nome)")
         return
