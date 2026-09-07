@@ -498,6 +498,15 @@ function MCA:StatusForScore(score)
     return "Critico", self:UIColor("red")
 end
 
+-- Tank blue, healer green, damage orange: the convention the game itself uses
+-- in the group finder, so it needs no legend.
+function MCA:GetRoleColor(role)
+    role = tostring(role or "DAMAGER"):upper()
+    if role == "TANK" then return self:UIColor("blue") end
+    if role == "HEALER" then return self:UIColor("green") end
+    return self:UIColor("orange")
+end
+
 function MCA:RoleShort(role)
     return self.RoleLabel[role or "DAMAGER"] or role or "DPS"
 end
@@ -1508,7 +1517,16 @@ function MCA:DrawPageTable(parent, headers, rows, y)
         local row = self:AcquireFrame(rowData.onClick and "Button" or "Frame", parent, "BackdropTemplate")
         row:SetPoint("TOPLEFT", parent, "TOPLEFT", PAGE_X, y)
         row:SetSize(PAGE_W, 30)
-        self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+
+        -- A highlighted row is lifted clear of the alternating stripes and given
+        -- a visible border, so finding yourself in a 25-name table is a glance
+        -- rather than a search.
+        if rowData.highlight then
+            self:SetBackdropSolid(row, {0.20,0.21,0.23,0.95}, {0.45,0.47,0.50,1})
+        else
+            self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
+        end
+
         if rowData.onClick then row:SetScript("OnClick", rowData.onClick) end
 
         for _, cell in ipairs(rowData) do
@@ -1845,9 +1863,22 @@ function MCA:DrawComparePage(parent, data, y)
         return va > vb
     end)
 
+    -- Role comes from the most recent attempt a player appears in, so someone
+    -- who swapped spec mid-night shows as whatever they last were.
+    local roleOf = {}
+    for i = #attempts, 1, -1 do
+        for _, p in pairs(attempts[i].players or {}) do
+            if p.name then roleOf[p.name] = p.role end
+        end
+    end
+
+    local myName = UnitName("player")
+
     local rows = {}
     for _, name in ipairs(names) do
-        local row = {{x = nameCol.x, w = nameCol.w, text = name, font = "GameFontNormal"}}
+        local row = {{x = nameCol.x, w = nameCol.w, text = name, font = "GameFontNormal",
+                      color = self:GetRoleColor(roleOf[name])}}
+        row.highlight = (name == myName)
 
         for i, r in ipairs(attempts) do
             local p = (r.players or {})[name]
