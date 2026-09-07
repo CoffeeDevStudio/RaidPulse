@@ -1088,68 +1088,6 @@ end
 
 
 
-function MCA:DrawPlayerTable(parent, data, y)
-    -- Columns are spread across the full page width. They used to be packed
-    -- into the left 540px with the last one stretching to the edge, which left
-    -- "Parse" floating alone in the middle of a 500px column.
-    local cols = {
-        num    = {x=10,  w=30,  justify="CENTER"},
-        player = {x=50,  w=260},
-        class  = {x=320, w=200},
-        role   = {x=530, w=100, justify="CENTER"},
-        deaths = {x=640, w=90,  justify="CENTER"},
-        metric = {x=740, w=140, justify="CENTER"},
-        parse  = {x=890, w=158, justify="CENTER"},
-    }
-
-    local headers = {
-        {label="#",       x=cols.num.x,    w=cols.num.w,    justify="CENTER"},
-        {label="Player",  x=cols.player.x, w=cols.player.w},
-        {label="Classe",  x=cols.class.x,  w=cols.class.w},
-        {label="Ruolo",   x=cols.role.x,   w=cols.role.w,   justify="CENTER"},
-        {label="Morti",   x=cols.deaths.x, w=cols.deaths.w, justify="CENTER"},
-        {label="DPS/HPS", x=cols.metric.x, w=cols.metric.w, justify="CENTER"},
-        {label="Parse",   x=cols.parse.x,  w=cols.parse.w,  justify="CENTER"},
-    }
-
-    local list = self:BuildPlayerList(data)
-    -- Populate mcaRating with the same values the Riepilogo role tables use.
-    if self.CalculateRoleRatings then self:CalculateRoleRatings(list) end
-
-    local rows = {}
-    for i, p in ipairs(list) do
-        local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
-        local nameColor = i % 3 == 0 and self:UIColor("blue")
-            or (i % 3 == 1 and self:UIColor("accent") or self:UIColor("orange"))
-
-        local row = {
-            {x=cols.num.x,    w=cols.num.w,    text=tostring(i)..".", justify="CENTER"},
-            {x=cols.player.x, w=cols.player.w, text=p.name or "?", classIcon=p.class,
-             font="GameFontNormal", color=nameColor},
-            {x=cols.class.x,  w=cols.class.w,  text=self:PrettyClass(p.class), classIcon=p.class},
-            {x=cols.role.x,   w=cols.role.w,   text=self:RoleShort(p.role), justify="CENTER"},
-            {x=cols.deaths.x, w=cols.deaths.w, text=tostring(p.deaths or 0), justify="CENTER",
-             color=(p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white")},
-        }
-
-        row[#row + 1] = {x=cols.metric.x, w=cols.metric.w,
-                         text=self:FormatMetricValue(self:GetFightMetric(p)), justify="CENTER"}
-        row[#row + 1] = {x=cols.parse.x, w=cols.parse.w, text=parseText,
-                         color=parseColor, justify="CENTER", font="GameFontNormal"}
-
-        -- Opens the per-player charts, not a one-row restatement of this row.
-        row.onClick = function()
-            MCA.selectedPlayer = p
-            MCA.activeTab = "playerDetail"
-            MCA:BuildDashboard(data)
-        end
-
-        rows[#rows + 1] = row
-    end
-
-    return self:DrawPageTable(parent, headers, rows, y)
-end
-
 function MCA:PrettyClass(class)
     local map = {DEATHKNIGHT="Death Knight", DEMONHUNTER="Demon Hunter"}
     if map[class or ""] then return map[class] end
@@ -2191,10 +2129,10 @@ end
 -- Scoped to one boss and one group for the same reason the comparison tab is:
 -- a pull of another boss, or the same boss with a different raid, is not the
 -- same measurement.
-function MCA:GetPlayerAttempts(playerName, data)
-    if not playerName or not data or not data.boss then return {} end
+function MCA:GetPlayerAttempts(playerName, boss, groupID)
+    if not playerName or not boss then return {} end
 
-    local candidates = self:GetComparisonCandidates(data.boss, data.groupID)
+    local candidates = self:GetComparisonCandidates(boss, groupID)
     local out = {}
     for i = #candidates, 1, -1 do          -- candidates arrive newest first
         local player = (candidates[i].players or {})[playerName]
@@ -2308,10 +2246,101 @@ local function chartTrend(metric, series)
     return string.format("  |cff%s(%+d vs prec.)|r", verdictCode(metric, diff), diff)
 end
 
+-- Fights this player actually took part in: one entry per boss and raid
+-- group, keyed and labelled the way the comparison tab does it, newest first.
+--
+-- Built from the player rather than from the open report, which is what lets
+-- the page work standing in a city: the question "how am I doing on this boss
+-- with this group" does not depend on which report happens to be loaded.
+function MCA:GetPlayerFights(playerName)
+    if not playerName then return {} end
+
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    local byKey, order, bossCounts = {}, {}, {}
+
+    for _, r in ipairs(history) do
+        if r and r.boss and r.boss ~= "" and r.historyID and (r.players or {})[playerName] then
+            local groupID = r.groupID or "legacy"
+            local key = r.boss .. "||" .. groupID
+
+            local entry = byKey[key]
+            if not entry then
+                entry = {key = key, boss = r.boss, groupID = groupID, type = r.type,
+                         count = 0, latest = 0, groupStartedAt = r.groupStartedAt}
+                byKey[key] = entry
+                order[#order + 1] = entry
+                bossCounts[r.boss] = (bossCounts[r.boss] or 0) + 1
+            end
+            entry.count = entry.count + 1
+            entry.latest = math.max(entry.latest, tonumber(r.savedAtEpoch) or 0)
+        end
+    end
+
+    table.sort(order, function(a, b) return a.latest > b.latest end)
+
+    -- Only say which group when the same fight appears under more than one,
+    -- otherwise every chip carries a date nobody needs to read.
+    for _, entry in ipairs(order) do
+        entry.label = entry.boss
+        if (bossCounts[entry.boss] or 0) > 1 then
+            local when = entry.groupStartedAt or entry.latest
+            local stamp = (when and when > 0 and date and date("%d/%m %H:%M", when)) or "gruppo prec."
+            entry.label = entry.boss .. " - " .. stamp
+        end
+    end
+
+    return order
+end
+
+-- Prefers an explicit pick, then the fight of whatever report is open, then
+-- the most recent -- so the page always lands on something.
+function MCA:GetPlayerFight(fights, data)
+    for _, f in ipairs(fights) do
+        if f.key == self.playerFightKey then return f end
+    end
+
+    if data and data.boss then
+        local wanted = data.boss .. "||" .. (data.groupID or "legacy")
+        for _, f in ipairs(fights) do
+            if f.key == wanted then
+                self.playerFightKey = f.key
+                return f
+            end
+        end
+    end
+
+    self.playerFightKey = fights[1] and fights[1].key
+    return fights[1]
+end
+
+-- The logged-in character as a player row. A saved attempt is preferred over
+-- asking the client, so class and role read the same here as in the charts;
+-- the client is only consulted for a character with nothing recorded yet.
+function MCA:GetSelfPlayer(data)
+    local name = UnitName("player")
+    if not name then return nil end
+
+    if data and (data.players or {})[name] then return data.players[name] end
+
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    for i = #history, 1, -1 do
+        local p = (history[i].players or {})[name]
+        if p then return p end
+    end
+
+    local _, class = UnitClass("player")
+    return {name = name, class = class,
+            role = UnitGroupRolesAssigned and UnitGroupRolesAssigned("player") or "DAMAGER"}
+end
+
 function MCA:DrawPlayerCharts(parent, data, y)
-    local sel = self.selectedPlayer
+    -- The tab is the logged-in character's own page. Clicking someone else in
+    -- the Riepilogo tables opens the same page for them instead.
+    local sel = (self.activeTab == "playerDetail" and self.selectedPlayer)
+        or self:GetSelfPlayer(data)
+
     if not sel or not sel.name then
-        self:Text(parent, "Seleziona un player dalla lista.", "GameFontNormal",
+        self:Text(parent, "Nessun personaggio da mostrare.", "GameFontNormal",
             {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, 700,
             self:UIColor("gray"))
         return y - 40
@@ -2320,23 +2349,45 @@ function MCA:DrawPlayerCharts(parent, data, y)
     self:Text(parent, sel.name, "GameFontHighlightLarge",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 420,
         self:GetClassColor(sel.class))
-    y = y - 24
+    y = y - 22
 
-    local attempts = self:GetPlayerAttempts(sel.name, data)
-
-    self:Text(parent, string.format("%s - %s - %d pull su %s in questo gruppo",
-            self:PrettyClass(sel.class), self:RoleShort(sel.role),
-            #attempts, tostring(data.boss or "?")),
+    self:Text(parent, string.format("%s - %s",
+            self:PrettyClass(sel.class), self:RoleShort(sel.role)),
         "GameFontNormalSmall",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y}, PAGE_W - 20,
         self:UIColor("gray"))
-    y = y - 30
+    y = y - 28
+
+    local fights = self:GetPlayerFights(sel.name)
+    if #fights == 0 then
+        self:Text(parent, "Nessun pull salvato per questo personaggio.", "GameFontNormal",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, PAGE_W - 20,
+            self:UIColor("gray"))
+        return y - 44
+    end
+
+    local fight = self:GetPlayerFight(fights, data)
+
+    self:Text(parent, "Raid / dungeon:", "GameFontNormalSmall",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 300, self:UIColor("gray"))
+    y = chipGrid(self, parent, y - 20, fights, 232, function(f, point, w, h)
+        local tag = (f.type == "M+") and "M+" or "Raid"
+        self:FilterButton(parent, f.label .. "  (" .. f.count .. " " .. tag .. ")",
+            point, w, h, f.key == fight.key,
+            function()
+                MCA.playerFightKey = f.key
+                MCA:BuildDashboard(MCA:GetLastAvailableReport())
+            end)
+    end)
+    y = y - 12
+
+    local attempts = self:GetPlayerAttempts(sel.name, fight.boss, fight.groupID)
 
     if #attempts < 2 then
         self:Text(parent,
-            "Serve un secondo pull sullo stesso boss con questo gruppo perche' ci sia "
-            .. "qualcosa da confrontare. I pull di un altro gruppo raid restano separati "
-            .. "apposta: non sono la stessa misura.",
+            "Un solo pull salvato qui. Serve un secondo tentativo sullo stesso boss con "
+            .. "lo stesso gruppo perche' ci sia qualcosa da confrontare: i pull di un "
+            .. "altro gruppo raid restano separati apposta, non sono la stessa misura.",
             "GameFontNormal",
             {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, PAGE_W - 20,
             self:UIColor("gray"))
@@ -2359,6 +2410,8 @@ function MCA:DrawPlayerCharts(parent, data, y)
                 outcome = outcomeColor(attempt.report),
                 value = value,
                 color = chartColor(self, metric, sel),
+                -- "the pull open now", which only means anything while the
+                -- chosen fight is the one the open report belongs to.
                 current = (data.historyID ~= nil and attempt.report.historyID == data.historyID)
                     or attempt.report == data,
             }
@@ -2506,10 +2559,7 @@ function MCA:DrawFullPage(root, data)
             y = y - 36
         end
 
-    elseif self.activeTab == "players" then
-        y = self:DrawPlayerTable(child, data, y)
-
-    elseif self.activeTab == "playerDetail" then
+    elseif self.activeTab == "players" or self.activeTab == "playerDetail" then
         y = self:DrawPlayerCharts(child, data, y)
 
     elseif self.activeTab == "interrupts" then
