@@ -2177,12 +2177,13 @@ local function chartsForRole(role)
     return PLAYER_CHART_ROLES[tostring(role or "")] or PLAYER_CHART_ROLES.DAMAGER
 end
 
--- Every saved attempt on this fight, by this group, in which the player
--- appears -- oldest first, so the chart reads left to right in time.
+-- Every saved attempt on this fight in which the player appears, oldest
+-- first, so the chart reads left to right in time.
 --
--- Scoped to one boss and one group for the same reason the comparison tab is:
--- a pull of another boss, or the same boss with a different raid, is not the
--- same measurement.
+-- The caller decides the scope by what it passes as groupID: a raid fight
+-- passes its own group, because the same boss with a different raid is not
+-- the same measurement, and an M+ dungeon passes the wildcard, because every
+-- run of it is a different group by definition. See fightGroupOf.
 function MCA:GetPlayerAttempts(playerName, boss, groupID)
     if not playerName or not boss then return {} end
 
@@ -2387,6 +2388,46 @@ function MCA:GetSelfPlayer(data)
             role = UnitGroupRolesAssigned and UnitGroupRolesAssigned("player") or "DAMAGER"}
 end
 
+-- What the history actually holds, grouped exactly the way the charts group
+-- it. "Only one pull saved here" has two very different causes -- one run
+-- really was recorded, or several were recorded and are not being matched --
+-- and nothing in the window told them apart.
+function MCA:ReportHistoryState()
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    local me = UnitName("player")
+
+    self:Print(string.format("Storico: %d report salvati. Io sono '%s'.",
+        #history, tostring(me)))
+
+    local byKey, order = {}, {}
+    for _, r in ipairs(history) do
+        local key = fightKeyFor(r)
+        local entry = byKey[key]
+        if not entry then
+            entry = {key = key, boss = r.boss, type = r.type, total = 0, mine = 0, latest = 0}
+            byKey[key] = entry
+            order[#order + 1] = entry
+        end
+        entry.total = entry.total + 1
+        if (r.players or {})[me] then entry.mine = entry.mine + 1 end
+        entry.latest = math.max(entry.latest, tonumber(r.savedAtEpoch) or 0)
+    end
+
+    table.sort(order, function(a, b) return a.latest > b.latest end)
+
+    for _, entry in ipairs(order) do
+        self:Print(string.format("  %s [%s] %d salvati, %d con me, ultimo %s  (key %s)",
+            tostring(entry.boss), tostring(entry.type or "?"),
+            entry.total, entry.mine,
+            (entry.latest > 0 and date and date("%d/%m %H:%M", entry.latest)) or "?",
+            entry.key))
+    end
+
+    if #order == 0 then
+        self:Print("  Nessun report nello storico.")
+    end
+end
+
 function MCA:DrawPlayerCharts(parent, data, y)
     -- The tab is the logged-in character's own page. Clicking someone else in
     -- the Riepilogo tables opens the same page for them instead.
@@ -2438,11 +2479,23 @@ function MCA:DrawPlayerCharts(parent, data, y)
     local attempts = self:GetPlayerAttempts(sel.name, fight.boss, fight.groupID)
 
     if #attempts < 2 then
-        self:Text(parent,
-            "Un solo pull salvato qui. Serve un secondo tentativo sullo stesso boss con "
-            .. "lo stesso gruppo perche' ci sia qualcosa da confrontare: i pull di un "
-            .. "altro gruppo raid restano separati apposta, non sono la stessa misura.",
-            "GameFontNormal",
+        -- The two scopes need two different explanations. Telling someone
+        -- their key needs "the same group" would be wrong now: M+ runs are
+        -- charted together across groups and key levels.
+        local why
+        if fight.type == "M+" then
+            why = "Una sola run salvata per questa dungeon. Le run della stessa M+ "
+                .. "vengono confrontate tutte insieme, con qualunque gruppo e a "
+                .. "qualunque livello di chiave: serve una seconda run. "
+                .. "Usa /rp hist per vedere cosa c'e' nello storico."
+        else
+            why = "Un solo pull salvato qui. Serve un secondo tentativo sullo stesso "
+                .. "boss con lo stesso gruppo perche' ci sia qualcosa da confrontare: "
+                .. "i pull di un altro gruppo raid restano separati apposta, non sono "
+                .. "la stessa misura."
+        end
+
+        self:Text(parent, why, "GameFontNormal",
             {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 6}, PAGE_W - 20,
             self:UIColor("gray"))
         return y - 60
