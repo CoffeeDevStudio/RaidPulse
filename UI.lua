@@ -2001,13 +2001,32 @@ function MCA:DrawComparePage(parent, data, y)
     local allCandidates = self:GetComparisonCandidates(boss, fight and fight.groupID)
     local days = self:GetAttemptDays(allCandidates)
 
-    -- A day left over from another fight would hide every attempt of this one,
-    -- so a filter that matches nothing here falls back to showing everything.
+    -- The filter defaults to today, and to the most recent day this fight was
+    -- played when it was not played today: picking a boss is nearly always
+    -- about tonight, and showing every night at once buries it.
+    --
+    -- nil and false mean different things here. nil is "not decided yet" and
+    -- takes the default; false is "the player asked for every day". Without
+    -- that difference, choosing Tutti i giorni would be undone by the next
+    -- redraw, which happens on every click in this tab.
     local activeDay
-    for _, day in ipairs(days) do
-        if day == self.compareDay then activeDay = day end
+    if self.compareDay then
+        for _, day in ipairs(days) do
+            if day == self.compareDay then activeDay = day end
+        end
+        -- A day left over from another fight matches nothing here, so it is
+        -- dropped and the default decides again.
+        if not activeDay then self.compareDay = nil end
     end
-    self.compareDay = activeDay
+
+    if self.compareDay == nil then
+        local today = date and date("%d/%m/%Y") or nil
+        for _, day in ipairs(days) do
+            if day == today then activeDay = day end
+        end
+        activeDay = activeDay or days[1]
+        self.compareDay = activeDay or false
+    end
 
     -- Offered only when there is more than one day to tell apart: a single
     -- night needs no filter, and a row of one chip is furniture.
@@ -2020,7 +2039,7 @@ function MCA:DrawComparePage(parent, data, y)
                 function()
                     -- Selecting a day drops a selection made on another one,
                     -- which would otherwise stay in the table invisibly.
-                    MCA.compareDay = (day ~= activeDay) and day or nil
+                    MCA.compareDay = (day ~= activeDay) and day or false
                     MCA.compareSelection = nil
                     rebuild()
                 end)
@@ -2029,7 +2048,7 @@ function MCA:DrawComparePage(parent, data, y)
         if activeDay then
             self:Button(parent, "Tutti i giorni",
                 {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 8}, 140, 24,
-                function() MCA.compareDay = nil MCA.compareSelection = nil rebuild() end)
+                function() MCA.compareDay = false MCA.compareSelection = nil rebuild() end)
             y = y - 34
         end
     end
