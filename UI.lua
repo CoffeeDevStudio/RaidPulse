@@ -1879,6 +1879,59 @@ function MCA:GetAttemptDay(report)
     return stamp:match("^(%d%d/%d%d/%d%d%d%d)") or stamp:match("^(%d%d/%d%d)") or nil
 end
 
+-- Resolve a stored day filter against the days actually available.
+--
+-- Three states, not two. nil is "not decided yet" and takes the default:
+-- today, or the most recent day there is when the fight was not played today.
+-- false is "the player asked for every day". A string is a choice. Without the
+-- difference between nil and false, choosing every day would be undone by the
+-- next redraw, and these tabs redraw on every click in them.
+--
+-- Shared by the comparison tab and the player page so the two cannot drift.
+-- `countByDay`, when given, keeps the default from landing on a day with a
+-- single attempt: there is nothing to compare there, and for an M+ dungeon --
+-- whose runs are pooled across groups and key levels on purpose -- today is
+-- very often exactly one run. An explicit pick is still honoured at one
+-- attempt, because that was asked for.
+function MCA:ResolveDayFilter(stored, days, countByDay)
+    local active
+    if stored then
+        for _, day in ipairs(days) do
+            if day == stored then active = day end
+        end
+        -- A day left over from another fight matches nothing here, so the
+        -- default decides again instead of emptying the page.
+        if not active then stored = nil end
+    end
+
+    if stored == nil then
+        local today = date and date("%d/%m/%Y") or nil
+        for _, day in ipairs(days) do
+            if day == today then active = day end
+        end
+        active = active or days[1]
+
+        if active and countByDay and #days > 1
+            and (countByDay[active] or 0) < 2 then
+            active = nil
+        end
+
+        stored = active or false
+    end
+
+    return active, stored
+end
+
+-- How many of these attempts fall on each day.
+function MCA:CountAttemptsByDay(reports)
+    local counts = {}
+    for _, r in ipairs(reports) do
+        local day = self:GetAttemptDay(r.report or r)
+        if day then counts[day] = (counts[day] or 0) + 1 end
+    end
+    return counts
+end
+
 -- The days a set of attempts covers, newest first.
 function MCA:GetAttemptDays(candidates)
     local seen, days = {}, {}
@@ -2001,32 +2054,9 @@ function MCA:DrawComparePage(parent, data, y)
     local allCandidates = self:GetComparisonCandidates(boss, fight and fight.groupID)
     local days = self:GetAttemptDays(allCandidates)
 
-    -- The filter defaults to today, and to the most recent day this fight was
-    -- played when it was not played today: picking a boss is nearly always
-    -- about tonight, and showing every night at once buries it.
-    --
-    -- nil and false mean different things here. nil is "not decided yet" and
-    -- takes the default; false is "the player asked for every day". Without
-    -- that difference, choosing Tutti i giorni would be undone by the next
-    -- redraw, which happens on every click in this tab.
     local activeDay
-    if self.compareDay then
-        for _, day in ipairs(days) do
-            if day == self.compareDay then activeDay = day end
-        end
-        -- A day left over from another fight matches nothing here, so it is
-        -- dropped and the default decides again.
-        if not activeDay then self.compareDay = nil end
-    end
-
-    if self.compareDay == nil then
-        local today = date and date("%d/%m/%Y") or nil
-        for _, day in ipairs(days) do
-            if day == today then activeDay = day end
-        end
-        activeDay = activeDay or days[1]
-        self.compareDay = activeDay or false
-    end
+    activeDay, self.compareDay = self:ResolveDayFilter(self.compareDay, days,
+        self:CountAttemptsByDay(allCandidates))
 
     -- Offered only when there is more than one day to tell apart: a single
     -- night needs no filter, and a row of one chip is furniture.
@@ -2310,14 +2340,19 @@ end
 -- passes its own group, because the same boss with a different raid is not
 -- the same measurement, and an M+ dungeon passes the wildcard, because every
 -- run of it is a different group by definition. See fightGroupOf.
-function MCA:GetPlayerAttempts(playerName, boss, groupID)
+function MCA:GetPlayerAttempts(playerName, boss, groupID, day)
     if not playerName or not boss then return {} end
 
     local candidates = self:GetComparisonCandidates(boss, groupID)
     local out = {}
     for i = #candidates, 1, -1 do          -- candidates arrive newest first
-        local player = (candidates[i].players or {})[playerName]
-        if player then out[#out + 1] = {report = candidates[i], player = player} end
+        local report = candidates[i]
+        local player = (report.players or {})[playerName]
+        -- Filtered before the cap below, or a day beyond the newest twelve
+        -- attempts would vanish from a chart that is supposed to show it.
+        if player and ((not day) or self:GetAttemptDay(report) == day) then
+            out[#out + 1] = {report = report, player = player}
+        end
     end
 
     while #out > PLAYER_CHART_MAX_BARS do table.remove(out, 1) end
@@ -2601,6 +2636,23 @@ function MCA:GetExportGroupKey(data)
     return "raid::" .. tostring(data.groupID or "legacy")
 end
 
+-- Every day this player has attempts on this fight, newest first. Read from
+-- the candidates rather than from GetPlayerAttempts, which is capped at twelve
+-- columns and would hide the older days entirely.
+function MCA:GetPlayerDays(playerName, boss, groupID)
+    local seen, days = {}, {}
+    for _, r in ipairs(self:GetComparisonCandidates(boss, groupID)) do
+        if (r.players or {})[playerName] then
+            local day = self:GetAttemptDay(r)
+            if day and not seen[day] then
+                seen[day] = true
+                days[#days + 1] = day
+            end
+        end
+    end
+    return days
+end
+
 -- Prefers an explicit pick, then the fight of whatever report is open, then
 -- the most recent -- so the page always lands on something.
 function MCA:GetPlayerFight(fights, data)
@@ -2725,19 +2777,54 @@ function MCA:DrawPlayerCharts(parent, data, y)
             point, w, h, f.key == fight.key,
             function()
                 MCA.playerFightKey = f.key
+                MCA.playerDay = nil          -- a new fight decides its day again
                 MCA:BuildDashboard(MCA:GetLastAvailableReport())
             end)
     end)
     y = y - 12
 
-    local attempts = self:GetPlayerAttempts(sel.name, fight.boss, fight.groupID)
+    local days = self:GetPlayerDays(sel.name, fight.boss, fight.groupID)
+    local activeDay
+    activeDay, self.playerDay = self:ResolveDayFilter(self.playerDay, days,
+        self:CountAttemptsByDay(self:GetPlayerAttempts(sel.name, fight.boss,
+            fight.groupID)))
+
+    -- Offered only when there is more than one day to tell apart: a single
+    -- night needs no filter, and a row of one chip is furniture.
+    if #days > 1 then
+        self:Text(parent, "Giorno:", "GameFontNormalSmall",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4}, 300,
+            self:UIColor("gray"))
+        y = chipGrid(self, parent, y - 22, days, 118, function(day, point, w, h)
+            self:FilterButton(parent, day, point, w, h, day == activeDay,
+                function()
+                    MCA.playerDay = (day ~= activeDay) and day or false
+                    MCA:BuildDashboard(MCA:GetLastAvailableReport())
+                end)
+        end)
+
+        if activeDay then
+            self:Button(parent, "Tutti i giorni",
+                {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 8}, 140, 24,
+                function()
+                    MCA.playerDay = false
+                    MCA:BuildDashboard(MCA:GetLastAvailableReport())
+                end)
+            y = y - 34
+        end
+    end
+
+    local attempts = self:GetPlayerAttempts(sel.name, fight.boss, fight.groupID, activeDay)
 
     if #attempts < 2 then
         -- The two scopes need two different explanations. Telling someone
         -- their key needs "the same group" would be wrong now: M+ runs are
         -- charted together across groups and key levels.
         local why
-        if fight.type == "M+" then
+        if activeDay then
+            why = "Un solo tentativo il " .. activeDay .. ". Scegli un altro giorno "
+                .. "o premi Tutti i giorni per confrontarli tutti."
+        elseif fight.type == "M+" then
             why = "Una sola run salvata per questa dungeon. Le run della stessa M+ "
                 .. "vengono confrontate tutte insieme, con qualunque gruppo e a "
                 .. "qualunque livello di chiave: serve una seconda run. "
