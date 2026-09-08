@@ -162,10 +162,8 @@ function MCA:RefreshExportWindow()
     local f = _G.RaidPulseExportFrame
     if not f or not f:IsShown() then return end
 
-    local groups = self:GetExportGroups()
-
-    -- Day filter. A raid group can run past midnight, so filtering the list by
-    -- day is not the same as picking a group, and both are offered.
+    -- Day first, because the rows are built for that day: their counts, their
+    -- key levels and their span all have to match what the command exports.
     local days = self:GetExportDays()
     while #days > EXPORT_MAX_DAYS do table.remove(days) end
 
@@ -199,14 +197,7 @@ function MCA:RefreshExportWindow()
     end
     for index = #shown + 1, #f.dayButtons do f.dayButtons[index]:Hide() end
 
-    -- Only the groups that touch the chosen day.
-    if activeDay then
-        local kept = {}
-        for _, entry in ipairs(groups) do
-            if entry.daySeen[activeDay] then kept[#kept + 1] = entry end
-        end
-        groups = kept
-    end
+    local groups = self:GetExportGroups(activeDay)
 
     -- A selection left over from a group since deleted must not leave the
     -- window pointing at nothing.

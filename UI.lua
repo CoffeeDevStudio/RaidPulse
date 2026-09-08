@@ -2478,12 +2478,16 @@ end
 --
 -- The same split as fightGroupOf, built here over whole containers rather than
 -- single fights, because the export addresses a night and not a boss.
-function MCA:GetExportGroups()
+-- `day`, when given, is the only day counted: every figure on a row has to
+-- describe what the command next to it will actually export. Without it a row
+-- read "4 run" while the command, narrowed to one day, wrote a page with one.
+function MCA:GetExportGroups(day)
     local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
     local byKey, order = {}, {}
 
     for _, r in ipairs(history) do
-        if r and r.boss and r.boss ~= "" and r.historyID then
+        local sameDay = (not day) or (self:GetAttemptDay(r) == day)
+        if sameDay and r and r.boss and r.boss ~= "" and r.historyID then
             local isMplus = (r.type or "") == "M+"
             local key = isMplus and ("mplus::" .. r.boss)
                 or ("raid::" .. tostring(r.groupID or "legacy"))
@@ -2561,7 +2565,12 @@ function MCA:GetExportGroups()
         if entry.first > 0 and date then
             entry.stamp = date("%d/%m %H:%M", entry.first)
             if entry.latest > entry.first then
-                entry.stamp = entry.stamp .. " - " .. date("%H:%M", entry.latest)
+                -- The date on both ends when they fall on different days: a
+                -- raid that ran to 00:03 read as "21:37 - 00:03" on one date,
+                -- which is a night that looks like it went backwards.
+                local sameDay = date("%d/%m", entry.first) == date("%d/%m", entry.latest)
+                entry.stamp = entry.stamp .. " - "
+                    .. date(sameDay and "%H:%M" or "%d/%m %H:%M", entry.latest)
             end
         end
     end
