@@ -398,14 +398,45 @@ def fight_key(report):
     return boss + "||" + str(report.get("groupID") or "legacy")
 
 
+# historyID -> the pull's number within its own fight, oldest first. Filled by
+# number_pulls once per load.
+#
+# Numbered over the whole fight and not over whatever the page is showing: a
+# pull that changes number when a day filter is applied is worse than no number
+# at all.
+PULL_NUMBER = {}
+
+
+def number_pulls(history):
+    counters = {}
+    for report in history:
+        ident = report.get("historyID")
+        if not ident or not report.get("boss"):
+            continue
+        key = fight_key(report)
+        counters[key] = counters.get(key, 0) + 1
+        PULL_NUMBER[ident] = counters[key]
+    return history
+
+
 def attempt_label(report):
-    stamp = str(report.get("savedAt") or "")
-    m = re.search(r"(\d\d:\d\d)\s*$", stamp)
-    label = m.group(1) if m else stamp
+    """A clock reading is five characters that repeat across a night and
+    collide into each other on an axis; "#7" is two, and it is what a pull gets
+    called when the group talks about it."""
+    number = PULL_NUMBER.get(report.get("historyID"))
+    if number:
+        label = "#%d" % number
+    else:
+        stamp = str(report.get("savedAt") or "")
+        m = re.search(r"(\d\d:\d\d)\s*$", stamp)
+        label = m.group(1) if m else stamp
+
+    # Runs of one dungeon are charted together whatever the key, so each column
+    # still carries its level.
     if report.get("type") == "M+":
-        lvl = re.match(r"^\+\d+$", str(report.get("difficulty") or ""))
+        lvl = KEY_LEVEL.match(str(report.get("difficulty") or ""))
         if lvl:
-            label += " " + lvl.group(0)
+            label += " +" + lvl.group(1)
     return label
 
 
@@ -1369,7 +1400,7 @@ def main():
                  "WTF/Account/<id>/SavedVariables/RaidPulse.lua")
 
     db = load_saved_variables(sv)
-    history = normalise(as_list((db or {}).get("history") or {}))
+    history = number_pulls(normalise(as_list((db or {}).get("history") or {})))
 
     day = parse_day(args.day) if args.day else None
     if day:

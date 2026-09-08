@@ -1547,7 +1547,8 @@ function MCA:DrawHistoryPage(parent)
     header:SetSize(PAGE_W, 28)
     self:SetBackdropSolid(header, {0.025,0.027,0.030,0.95}, {0.16,0.17,0.18,1})
 
-    self:Text(header, "Data", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 10 * k, 0}, 120 * k, self:UIColor("white"))
+    self:Text(header, "#", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 10 * k, 0}, 30 * k, self:UIColor("white"), "CENTER")
+    self:Text(header, "Data", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 46 * k, 0}, 96 * k, self:UIColor("white"))
     self:Text(header, "Tipo", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 145 * k, 0}, 70 * k, self:UIColor("white"))
     self:Text(header, "Encounter / Dungeon", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 230 * k, 0}, 260 * k, self:UIColor("white"))
     self:Text(header, "Modalità", "GameFontHighlightSmall", {"LEFT", header, "LEFT", 510 * k, 0}, 130 * k, self:UIColor("white"))
@@ -1557,6 +1558,7 @@ function MCA:DrawHistoryPage(parent)
 
     local y = -124
     local rowIndex = 0
+    local numbers = self:GetPullNumbers()
 
     for i = #history, 1, -1 do
         local report = history[i]
@@ -1577,8 +1579,11 @@ function MCA:DrawHistoryPage(parent)
         self:SetBackdropSolid(row, rowIndex % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
 
         local resultText = isKill and "Kill" or "Wipe"
+        local pull = numbers[report.historyID]
 
-        self:Text(row, report.savedAt or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 10 * k, 0}, 120 * k, self:UIColor("gray"))
+        self:Text(row, pull and ("#" .. pull) or "-", "GameFontNormal",
+            {"LEFT", row, "LEFT", 10 * k, 0}, 30 * k, self:UIColor("accent"), "CENTER")
+        self:Text(row, report.savedAt or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 46 * k, 0}, 96 * k, self:UIColor("gray"))
         self:Text(row, report.type or "?", "GameFontNormalSmall", {"LEFT", row, "LEFT", 145 * k, 0}, 70 * k, self:UIColor("accent"))
         self:Text(row, report.boss or "?", "GameFontNormal", {"LEFT", row, "LEFT", 230 * k, 0}, 260 * k, self:UIColor("white"))
         self:Text(row, self:GetModeDifficultyText(report), "GameFontNormalSmall", {"LEFT", row, "LEFT", 510 * k, 0}, 130 * k, self:GetDifficultyColor(report.difficulty))
@@ -1747,7 +1752,18 @@ end
 -- Columns get narrow fast, so cap how many attempts render at once. Selecting
 -- more than this keeps the newest and says so rather than squeezing "156k +2"
 -- into 60 pixels.
-local COMPARE_MAX_COLUMNS = 8
+-- How narrow a comparison column may get, in the reference units every table
+-- is written in. "202k" needs about thirty of them, so this leaves room for
+-- the padding and a wider figure.
+local COMPARE_MIN_COL = 46
+
+-- Derived from the width rather than fixed at eight. Numbering the pulls made
+-- the headers two characters instead of five, and eighteen attempts now fit
+-- where eight did; a hardcoded cap would have thrown away the room that
+-- bought.
+local function compareMaxColumns()
+    return math.max(2, math.min(24, math.floor((PAGE_REF_W - 182) / COMPARE_MIN_COL)))
+end
 
 -- savedAt is "dd/mm/yyyy HH:MM" and the chips only have room for the clock,
 -- which is what tells attempts apart within one night anyway.
@@ -1777,19 +1793,29 @@ local function colorCode(c)
         math.floor(c[3] * 255 + 0.5))
 end
 
-local function attemptLabel(report)
-    local t = tostring(report and report.savedAt or "")
-    t = t:match("(%d%d:%d%d)%s*$") or t
+-- A clock reading is five characters that repeat across a night and collide
+-- into each other on an axis; "#7" is two, and it is what a pull gets called
+-- when the group talks about it.
+local function attemptLabel(report, numbers)
+    local label = "?"
+
+    local n = numbers and report and numbers[report.historyID]
+    if n then
+        label = "#" .. n
+    else
+        local t = tostring(report and report.savedAt or "")
+        label = t:match("(%d%d:%d%d)%s*$") or t
+    end
 
     -- Runs of one dungeon are charted together whatever the key, so each
-    -- column has to carry its level: without it a +4 next to a +10 reads as
+    -- column still carries its level: without it a +4 next to a +10 reads as
     -- the player having got worse.
     if report and (report.type or "") == "M+" then
         local level = tostring(report.difficulty or ""):match("^%+%d+$")
-        if level then t = t .. " " .. level end
+        if level then label = label .. " " .. level end
     end
 
-    return "|cff" .. colorCode(outcomeColor(report)) .. t .. "|r"
+    return "|cff" .. colorCode(outcomeColor(report)) .. label .. "|r"
 end
 
 -- Which attempts belong together.
@@ -1814,6 +1840,28 @@ end
 
 local function fightKeyFor(report)
     return tostring(report and report.boss) .. "||" .. fightGroupOf(report)
+end
+
+-- The number of each pull within its own fight, oldest first, keyed by
+-- historyID.
+--
+-- Numbered over the whole fight and not over whatever is on screen: a pull
+-- that changes number when a day filter is applied is worse than no number at
+-- all. Computed on demand rather than stored on the report, which would write
+-- a display detail into the saved variables.
+function MCA:GetPullNumbers()
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+    local counters, numbers = {}, {}
+
+    for _, r in ipairs(history) do
+        if r and r.historyID and r.boss and r.boss ~= "" then
+            local key = fightKeyFor(r)
+            counters[key] = (counters[key] or 0) + 1
+            numbers[r.historyID] = counters[key]
+        end
+    end
+
+    return numbers
 end
 
 -- Every fight in the history worth comparing: one entry per boss (raid) or
@@ -2092,12 +2140,13 @@ function MCA:DrawComparePage(parent, data, y)
     end
 
     local selection = self:GetCompareSelection(candidates)
+    local numbers = self:GetPullNumbers()
 
     self:Text(parent, "Tentativi da confrontare:", "GameFontNormalSmall",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300, self:UIColor("gray"))
-    y = chipGrid(self, parent, y - 28, candidates, 104, function(r, point, w, h)
+    y = chipGrid(self, parent, y - 28, candidates, 78, function(r, point, w, h)
         local on = selection[r.historyID] and true or false
-        self:FilterButton(parent, attemptLabel(r),
+        self:FilterButton(parent, attemptLabel(r, numbers),
             point, w, h, on,
             function()
                 selection[r.historyID] = (not on) or nil
@@ -2139,7 +2188,7 @@ function MCA:DrawComparePage(parent, data, y)
     local attempts, dropped = {}, 0
     for _, r in ipairs(candidates) do
         if selection[r.historyID] then
-            if #attempts < COMPARE_MAX_COLUMNS then
+            if #attempts < compareMaxColumns() then
                 attempts[#attempts + 1] = r
             else
                 dropped = dropped + 1
@@ -2153,14 +2202,15 @@ function MCA:DrawComparePage(parent, data, y)
         return y - 40
     end
 
-    local nameCol = {x = 10, w = 210}
-    local firstX = 230
-    local colW = math.max(90, math.floor((PAGE_REF_W - firstX) / #attempts))
+    local nameCol = {x = 10, w = 170}
+    local firstX = 182
+    local colW = math.max(COMPARE_MIN_COL,
+        math.floor((PAGE_REF_W - firstX) / #attempts))
 
     local headers = {{label = "Player", x = nameCol.x, w = nameCol.w}}
     for i, r in ipairs(attempts) do
         headers[#headers + 1] = {
-            label = attemptLabel(r),
+            label = attemptLabel(r, numbers),
             x = firstX + (i - 1) * colW, w = colW - 10, justify = "CENTER",
         }
     end
@@ -2282,7 +2332,7 @@ function MCA:DrawComparePage(parent, data, y)
             .. (metric.better == -1 and " (meno e' meglio)" or "") .. ". \"✖\" = wipe."
     end
     if dropped > 0 then
-        legend = legend .. "  (" .. dropped .. " selezionati oltre i " .. COMPARE_MAX_COLUMNS
+        legend = legend .. "  (" .. dropped .. " selezionati oltre i " .. compareMaxColumns()
             .. " visualizzabili non sono mostrati.)"
     end
     self:Text(parent, legend, "GameFontNormalSmall",
@@ -2992,6 +3042,7 @@ function MCA:DrawPlayerCharts(parent, data, y)
     end
 
     local attempts = self:GetPlayerAttempts(sel.name, fight.boss, fight.groupID, activeDay)
+    local numbers = self:GetPullNumbers()
 
     if #attempts < 2 then
         -- The two scopes need two different explanations. Telling someone
@@ -3031,7 +3082,7 @@ function MCA:DrawPlayerCharts(parent, data, y)
             local value = tonumber(metric.get(self, attempt.player)) or 0
             maxV = math.max(maxV, value)
             series[#series + 1] = {
-                label = attemptLabel(attempt.report),
+                label = attemptLabel(attempt.report, numbers),
                 outcome = outcomeColor(attempt.report),
                 value = value,
                 color = chartColor(self, metric, sel),
@@ -3079,7 +3130,7 @@ function MCA:DrawPlayerCharts(parent, data, y)
                 end
                 mine = mine + #own
                 strips[#strips + 1] = {
-                    label = attemptLabel(attempt.report),
+                    label = attemptLabel(attempt.report, numbers),
                     duration = tonumber(attempt.report.duration) or 0,
                     own = own, others = others,
                     outcome = outcomeColor(attempt.report),
