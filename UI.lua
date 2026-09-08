@@ -1871,6 +1871,27 @@ function MCA:GetComparableFights()
     return out
 end
 
+-- The calendar day an attempt belongs to, as dd/mm/yyyy. Read from savedAt
+-- rather than recomputed from the epoch: that string is what every label in
+-- the window already shows, and two sources for one date drift.
+function MCA:GetAttemptDay(report)
+    local stamp = tostring(report and report.savedAt or "")
+    return stamp:match("^(%d%d/%d%d/%d%d%d%d)") or stamp:match("^(%d%d/%d%d)") or nil
+end
+
+-- The days a set of attempts covers, newest first.
+function MCA:GetAttemptDays(candidates)
+    local seen, days = {}, {}
+    for _, r in ipairs(candidates) do
+        local day = self:GetAttemptDay(r)
+        if day and not seen[day] then
+            seen[day] = true
+            days[#days + 1] = day
+        end
+    end
+    return days
+end
+
 -- Every saved attempt on one fight, for one group, newest first.
 function MCA:GetComparisonCandidates(boss, groupID)
     if not boss or boss == "" then return {} end
@@ -1971,12 +1992,56 @@ function MCA:DrawComparePage(parent, data, y)
             function()
                 MCA.compareFightKey = f.key
                 MCA.compareSelection = nil
+                MCA.compareDay = nil
                 rebuild()
             end)
     end)
 
     -- Attempt picker for the chosen fight.
-    local candidates = self:GetComparisonCandidates(boss, fight and fight.groupID)
+    local allCandidates = self:GetComparisonCandidates(boss, fight and fight.groupID)
+    local days = self:GetAttemptDays(allCandidates)
+
+    -- A day left over from another fight would hide every attempt of this one,
+    -- so a filter that matches nothing here falls back to showing everything.
+    local activeDay
+    for _, day in ipairs(days) do
+        if day == self.compareDay then activeDay = day end
+    end
+    self.compareDay = activeDay
+
+    -- Offered only when there is more than one day to tell apart: a single
+    -- night needs no filter, and a row of one chip is furniture.
+    if #days > 1 then
+        self:Text(parent, "Giorno:", "GameFontNormalSmall",
+            {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300,
+            self:UIColor("gray"))
+        y = chipGrid(self, parent, y - 28, days, 118, function(day, point, w, h)
+            self:FilterButton(parent, day, point, w, h, day == activeDay,
+                function()
+                    -- Selecting a day drops a selection made on another one,
+                    -- which would otherwise stay in the table invisibly.
+                    MCA.compareDay = (day ~= activeDay) and day or nil
+                    MCA.compareSelection = nil
+                    rebuild()
+                end)
+        end)
+
+        if activeDay then
+            self:Button(parent, "Tutti i giorni",
+                {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 8}, 140, 24,
+                function() MCA.compareDay = nil MCA.compareSelection = nil rebuild() end)
+            y = y - 34
+        end
+    end
+
+    local candidates = allCandidates
+    if activeDay then
+        candidates = {}
+        for _, r in ipairs(allCandidates) do
+            if self:GetAttemptDay(r) == activeDay then candidates[#candidates + 1] = r end
+        end
+    end
+
     local selection = self:GetCompareSelection(candidates)
 
     self:Text(parent, "Tentativi da confrontare:", "GameFontNormalSmall",
@@ -2002,11 +2067,22 @@ function MCA:DrawComparePage(parent, data, y)
             end)
     end)
 
-    self:Button(parent, "Deseleziona tutto",
+    self:Button(parent, "Seleziona tutto",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X, y - 8}, 150, 24,
+        function()
+            -- Only what the day filter is showing: selecting attempts that are
+            -- hidden would put columns in the table with no chip to remove.
+            MCA.compareSelection = {}
+            for _, r in ipairs(candidates) do
+                MCA.compareSelection[r.historyID] = true
+            end
+            rebuild()
+        end)
+    self:Button(parent, "Deseleziona tutto",
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 160, y - 8}, 150, 24,
         function() MCA.compareSelection = {} rebuild() end)
     self:Button(parent, "Ultimi 4",
-        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 160, y - 8}, 110, 24,
+        {"TOPLEFT", parent, "TOPLEFT", PAGE_X + 320, y - 8}, 110, 24,
         function() MCA.compareSelection = nil rebuild() end)
     y = y - 42
 
@@ -2402,6 +2478,7 @@ function MCA:GetExportGroups()
                     bossOrder = {}, bossCount = {}, players = {},
                     count = 0, kills = 0, first = 0, latest = 0,
                     keyMin = nil, keyMax = nil,
+                    days = {}, daySeen = {},
                 }
                 byKey[key] = entry
                 order[#order + 1] = entry
@@ -2424,6 +2501,14 @@ function MCA:GetExportGroups()
             if epoch > 0 then
                 if entry.first == 0 or epoch < entry.first then entry.first = epoch end
                 if epoch > entry.latest then entry.latest = epoch end
+            end
+
+            -- A raid group can run past midnight, so a night is not always one
+            -- calendar day and the export has to be able to say which.
+            local day = self:GetAttemptDay(r)
+            if day and not entry.daySeen[day] then
+                entry.daySeen[day] = true
+                entry.days[#entry.days + 1] = day
             end
 
             if not entry.bossCount[r.boss] then
@@ -2464,6 +2549,21 @@ function MCA:GetExportGroups()
 
     table.sort(order, function(a, b) return a.latest > b.latest end)
     return order
+end
+
+-- Every day the history covers, newest first, for the export day filter.
+function MCA:GetExportDays()
+    local seen, days = {}, {}
+    local history = self.GetHistory and self:GetHistory() or (RaidPulseDB.history or {})
+
+    for i = #history, 1, -1 do
+        local day = self:GetAttemptDay(history[i])
+        if day and not seen[day] then
+            seen[day] = true
+            days[#days + 1] = day
+        end
+    end
+    return days
 end
 
 -- The group a report belongs to, so the window opens on it.

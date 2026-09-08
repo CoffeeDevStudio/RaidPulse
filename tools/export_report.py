@@ -146,6 +146,53 @@ def find_saved_variables():
     return hits[0] if hits else None
 
 
+def report_day(report):
+    """The calendar day of an attempt, as dd/mm/yyyy.
+
+    Read from savedAt, which is the string every label in the addon shows,
+    rather than recomputed from the epoch: two sources for one date drift the
+    moment a timezone or a midnight is involved.
+    """
+    stamp = str((report or {}).get("savedAt") or "")
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})", stamp)
+    if m:
+        return "%s/%s/%s" % m.groups()
+    m = re.match(r"^(\d{2})/(\d{2})\b", stamp)
+    if m:
+        return "%s/%s" % m.groups()
+    return None
+
+
+def parse_day(text):
+    """dd/mm/yyyy, dd/mm, or yyyy-mm-dd, all normalised to what report_day
+    returns. Anything else is refused rather than silently matching nothing."""
+    text = (text or "").strip()
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", text)
+    if m:
+        return "%s/%s/%s" % (m.group(3), m.group(2), m.group(1))
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", text)
+    if m:
+        return "%02d/%02d/%s" % (int(m.group(1)), int(m.group(2)), m.group(3))
+    m = re.match(r"^(\d{1,2})/(\d{1,2})$", text)
+    if m:
+        return "%02d/%02d" % (int(m.group(1)), int(m.group(2)))
+    raise SystemExit("--day %s: usa dd/mm/aaaa, dd/mm oppure aaaa-mm-gg" % text)
+
+
+def filter_by_day(history, day):
+    """Both forms compare on the day, so --day 08/09 matches 08/09/2026."""
+    if not day:
+        return history
+    hits = []
+    for report in history:
+        got = report_day(report)
+        if not got:
+            continue
+        if got == day or got.startswith(day + "/") or day.startswith(got + "/"):
+            hits.append(report)
+    return hits
+
+
 def as_list(table):
     """A Lua array comes back as {1: v, 2: v}; give it back in order."""
     if not isinstance(table, dict):
@@ -880,6 +927,9 @@ def main():
                          "when --only picks one)")
     ap.add_argument("--list", action="store_true",
                     help="list the sections and exit, without writing anything")
+    ap.add_argument("--day", metavar="GIORNO",
+                    help="solo i tentativi di questo giorno: dd/mm/aaaa, dd/mm "
+                         "o aaaa-mm-gg")
     ap.add_argument("--only", metavar="SEZIONE",
                     help="only this section: its number from --list, its groupID, "
                          "or part of its name")
@@ -892,10 +942,20 @@ def main():
 
     db = load_saved_variables(sv)
     history = as_list((db or {}).get("history") or {})
+
+    day = parse_day(args.day) if args.day else None
+    if day:
+        history = filter_by_day(history, day)
+        if not history:
+            raise SystemExit("--day %s: nessun tentativo salvato in quel giorno "
+                             "(usa --list per vedere cosa c'e')" % args.day)
+
     containers = collect_containers(history)
 
     if args.list:
-        print("%s — %d report, %d sezioni\n" % (sv, len(history), len(containers)))
+        print("%s — %d report, %d sezioni%s\n"
+              % (sv, len(history), len(containers),
+                 (" (giorno %s)" % day) if day else ""))
         for i, box in enumerate(containers, start=1):
             _, _, plain, _players, detail = container_title(box)
             print("%3d  %-46s %-38s [%s]"
@@ -920,10 +980,14 @@ def main():
                 r"[^A-Za-z0-9]+", "-", base).strip("-").lower()
         else:
             out_path = "report.html"
+        if day and not args.only:
+            out_path = "report-%s.html" % day.replace("/", "-")
 
     note = ""
+    if day:
+        note = " &middot; giorno: %s" % esc(day)
     if args.only:
-        note = " &middot; filtro: %s" % esc(args.only)
+        note = note + " &middot; filtro: %s" % esc(args.only)
 
     page = render(db, sv, chosen, total_sections=len(containers), filter_note=note)
 
@@ -931,6 +995,8 @@ def main():
         fh.write(page)
 
     print("Read %s (%d report)" % (sv, len(history)))
+    if day:
+        print("  giorno: %s" % day)
     if args.only:
         for box in chosen:
             print("  sezione: %s" % container_title(box)[2])

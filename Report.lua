@@ -96,11 +96,15 @@ local function shellQuote(text)
 end
 
 -- `selector` is what --only receives: a raid night's group id, or a dungeon's
--- name. GetExportGroups hands one out per row of the picker.
-function MCA:GetExportCommand(selector)
+-- name. GetExportGroups hands one out per row of the picker. `day` narrows it
+-- further, which matters because a raid group can run past midnight.
+function MCA:GetExportCommand(selector, day)
     local command = "python " .. shellQuote(self:GetExportToolPath())
     if selector and selector ~= "" then
         command = command .. " --only " .. shellQuote(selector)
+    end
+    if day and day ~= "" then
+        command = command .. " --day " .. shellQuote(day)
     end
     return command
 end
@@ -135,11 +139,74 @@ local function exportRow(f, index)
     return row
 end
 
+-- Five, not more: the row is "Tutti" plus the days, and six buttons at 80
+-- apart is what fits beside the whole-day button in a 700-wide window.
+local EXPORT_MAX_DAYS = 5
+
+local function exportDayButton(f, index)
+    local button = f.dayButtons[index]
+    if button then return button end
+
+    button = CreateFrame("Button", nil, f, "BackdropTemplate")
+    button:SetPoint("TOPLEFT", 20 + (index - 1) * 80, -60)
+    button:SetSize(76, 22)
+
+    button.text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    button.text:SetPoint("CENTER")
+
+    f.dayButtons[index] = button
+    return button
+end
+
 function MCA:RefreshExportWindow()
     local f = _G.RaidPulseExportFrame
     if not f or not f:IsShown() then return end
 
     local groups = self:GetExportGroups()
+
+    -- Day filter. A raid group can run past midnight, so filtering the list by
+    -- day is not the same as picking a group, and both are offered.
+    local days = self:GetExportDays()
+    while #days > EXPORT_MAX_DAYS do table.remove(days) end
+
+    local activeDay
+    for _, day in ipairs(days) do
+        if day == self.exportDay then activeDay = day end
+    end
+    self.exportDay = activeDay
+
+    local shown = {"Tutti"}
+    for _, day in ipairs(days) do shown[#shown + 1] = day end
+
+    for index, label in ipairs(shown) do
+        local button = exportDayButton(f, index)
+        local day = (index > 1) and label or nil
+        local active = (day == activeDay)
+
+        self:SetBackdropSolid(button,
+            active and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
+            active and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
+        button.text:SetText(label)
+        button.text:SetTextColor(unpack(active and self:UIColor("accent")
+            or self:UIColor("gray")))
+
+        button:SetScript("OnClick", function()
+            MCA.exportDay = day
+            MCA.exportWholeDay = false
+            MCA:RefreshExportWindow()
+        end)
+        button:Show()
+    end
+    for index = #shown + 1, #f.dayButtons do f.dayButtons[index]:Hide() end
+
+    -- Only the groups that touch the chosen day.
+    if activeDay then
+        local kept = {}
+        for _, entry in ipairs(groups) do
+            if entry.daySeen[activeDay] then kept[#kept + 1] = entry end
+        end
+        groups = kept
+    end
 
     -- A selection left over from a group since deleted must not leave the
     -- window pointing at nothing.
@@ -198,16 +265,34 @@ function MCA:RefreshExportWindow()
         return
     end
 
-    local command = self:GetExportCommand(chosen.selector)
+    local command = self:GetExportCommand(
+        (not self.exportWholeDay) and chosen.selector or nil, activeDay)
     f.cmd.rpText = command
     f.cmd:SetText(command)
     f.cmd:SetFocus()
     f.cmd:HighlightText()
 
+    -- The whole-day button only means something once a day is chosen, and
+    -- would otherwise offer to export everything twice over.
+    if activeDay then
+        f.wholeDay:Show()
+        self:SetBackdropSolid(f.wholeDay,
+            self.exportWholeDay and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
+            self.exportWholeDay and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
+    else
+        f.wholeDay:Hide()
+        self.exportWholeDay = false
+    end
+
     -- Two conditions the command depends on, neither of them obvious: the data
     -- has to be on disk, and a relative path only resolves from one folder.
     local stored = RaidPulseDB.config and RaidPulseDB.config.exportToolPath
-    f.hint:SetText("Selezionato: " .. chosen.stamp .. " - " .. chosen.label
+    local what = self.exportWholeDay
+        and ("tutto il " .. tostring(activeDay))
+        or (chosen.stamp .. " - " .. chosen.label
+            .. (activeDay and (", solo il " .. activeDay) or ""))
+
+    f.hint:SetText("Selezionato: " .. what
         .. ".  Le SavedVariables si scrivono al /reload: un tentativo appena "
         .. "finito non e' ancora su disco."
         .. (stored and "" or "  Esegui dalla cartella _retail_, oppure lancia lo "
@@ -235,6 +320,7 @@ function MCA:ShowExportWindow(data)
         end
 
         f.rows = {}
+        f.dayButtons = {}
 
         f.title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
         f.title:SetPoint("TOP", 0, -12)
@@ -242,12 +328,25 @@ function MCA:ShowExportWindow(data)
 
         f.sub = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         f.sub:SetPoint("TOPLEFT", 16, -40)
-        f.sub:SetText("Scegli la serata di raid o la dungeon da esportare:")
+        f.sub:SetText("Giorno, poi la serata di raid o la dungeon da esportare:")
+
+        f.wholeDay = CreateFrame("Button", nil, f, "BackdropTemplate")
+        -- Anchored to the right edge rather than counted out from the left,
+        -- so it cannot land outside the frame when the day count changes.
+        f.wholeDay:SetPoint("TOPRIGHT", -20, -60)
+        f.wholeDay:SetSize(126, 22)
+        local wholeLabel = f.wholeDay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        wholeLabel:SetPoint("CENTER")
+        wholeLabel:SetText("Tutto il giorno")
+        f.wholeDay:SetScript("OnClick", function()
+            MCA.exportWholeDay = not MCA.exportWholeDay
+            MCA:RefreshExportWindow()
+        end)
 
         local scroll = CreateFrame("ScrollFrame", "RaidPulseExportScroll", f,
             "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 20, -60)
-        scroll:SetSize(640, 218)
+        scroll:SetPoint("TOPLEFT", 20, -90)
+        scroll:SetSize(640, 188)
 
         f.listChild = CreateFrame("Frame", nil, scroll)
         f.listChild:SetSize(620, 1)
