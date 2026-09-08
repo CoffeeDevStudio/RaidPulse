@@ -95,14 +95,22 @@ local function shellQuote(text)
     return '"' .. tostring(text) .. '"'
 end
 
--- `selector` is what --only receives: a raid night's group id, or a dungeon's
--- name. GetExportGroups hands one out per row of the picker. `day` narrows it
--- further, which matters because a raid group can run past midnight.
-function MCA:GetExportCommand(selector, day)
+-- `selectors` is what --only receives, one per ticked row: a raid night's
+-- group id, or a dungeon's name. `day` narrows it further, which matters both
+-- because a raid group can run past midnight and because an evening of keys is
+-- several dungeons that only the date has in common.
+--
+-- No selector at all is not an error: it means the whole day, or the whole
+-- history when no day is chosen either.
+function MCA:GetExportCommand(selectors, day)
     local command = "python " .. shellQuote(self:GetExportToolPath())
-    if selector and selector ~= "" then
-        command = command .. " --only " .. shellQuote(selector)
+
+    for _, selector in ipairs(selectors or {}) do
+        if selector and selector ~= "" then
+            command = command .. " --only " .. shellQuote(selector)
+        end
     end
+
     if day and day ~= "" then
         command = command .. " --day " .. shellQuote(day)
     end
@@ -189,8 +197,10 @@ function MCA:RefreshExportWindow()
             or self:UIColor("gray")))
 
         button:SetScript("OnClick", function()
+            -- A new day lists different rows, and ticks that refer to the old
+            -- ones would export sections nobody can see.
             MCA.exportDay = day
-            MCA.exportWholeDay = false
+            MCA.exportSelected = {}
             MCA:RefreshExportWindow()
         end)
         button:Show()
@@ -199,27 +209,28 @@ function MCA:RefreshExportWindow()
 
     local groups = self:GetExportGroups(activeDay)
 
-    -- A selection left over from a group since deleted must not leave the
-    -- window pointing at nothing.
-    local chosen
-    for _, entry in ipairs(groups) do
-        if entry.key == self.exportSelection then chosen = entry end
+    -- Ticks, not one selection. An evening of keys is several dungeons with
+    -- nothing in common but the date, and exporting them together is the
+    -- reason this window exists.
+    self.exportSelected = self.exportSelected or {}
+
+    -- A tick left over from a group that the day filter hides would export
+    -- something not on screen, so only what is listed can stay selected.
+    local visible, ticked = {}, 0
+    for _, entry in ipairs(groups) do visible[entry.key] = true end
+    for key in pairs(self.exportSelected) do
+        if not visible[key] then self.exportSelected[key] = nil end
     end
-    chosen = chosen or groups[1]
-    self.exportSelection = chosen and chosen.key or nil
+    for _ in pairs(self.exportSelected) do ticked = ticked + 1 end
 
     for index, entry in ipairs(groups) do
         local row = exportRow(f, index)
-        local active = chosen and entry.key == chosen.key
+        local on = self.exportSelected[entry.key] and true or false
 
         self:SetBackdropSolid(row,
-            active and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
-            active and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
+            on and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
+            on and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
 
-        -- A raid group is one roster, so how many took part is worth saying.
-        -- A dungeon pools runs made with different groups, so the same number
-        -- there is the union of all of them: five players, six times over,
-        -- reported as twenty-five. The key levels are what varies instead.
         local detail
         if entry.kind == "M+" then
             local keys = ""
@@ -235,12 +246,12 @@ function MCA:RefreshExportWindow()
                 entry.count, entry.kills, entry.count - entry.kills, entry.playerCount)
         end
 
-        row.text:SetText(string.format("|cff%s%s|r  %s  |cff9aa0a8%s|r",
-            active and "ffd100" or "e6e6e6",
+        row.text:SetText(string.format("|cff%s[%s] %s|r  %s  |cff9aa0a8%s|r",
+            on and "ffd100" or "e6e6e6", on and "x" or " ",
             entry.stamp, entry.label, detail))
 
         row:SetScript("OnClick", function()
-            MCA.exportSelection = entry.key
+            MCA.exportSelected[entry.key] = (not on) or nil
             MCA:RefreshExportWindow()
         end)
         row:Show()
@@ -249,39 +260,52 @@ function MCA:RefreshExportWindow()
     for index = #groups + 1, #f.rows do f.rows[index]:Hide() end
     f.listChild:SetHeight(math.max(1, #groups * (EXPORT_ROW_H + 2)))
 
-    if not chosen then
+    f.selectAll:SetScript("OnClick", function()
+        MCA.exportSelected = {}
+        for _, entry in ipairs(groups) do
+            MCA.exportSelected[entry.key] = true
+        end
+        MCA:RefreshExportWindow()
+    end)
+    f.selectNone:SetScript("OnClick", function()
+        MCA.exportSelected = {}
+        MCA:RefreshExportWindow()
+    end)
+
+    if #groups == 0 then
         f.cmd.rpText = ""
         f.cmd:SetText("")
-        f.hint:SetText("Nessun gruppo nello storico da esportare.")
+        f.hint:SetText("Niente da esportare in questo giorno.")
         return
     end
 
-    local command = self:GetExportCommand(
-        (not self.exportWholeDay) and chosen.selector or nil, activeDay)
+    -- Selectors in the order the rows are in, so the command reads the way the
+    -- list does.
+    local selectors = {}
+    for _, entry in ipairs(groups) do
+        if self.exportSelected[entry.key] then
+            selectors[#selectors + 1] = entry.selector
+        end
+    end
+
+    local command = self:GetExportCommand(selectors, activeDay)
     f.cmd.rpText = command
     f.cmd:SetText(command)
     f.cmd:SetFocus()
     f.cmd:HighlightText()
 
-    -- The whole-day button only means something once a day is chosen, and
-    -- would otherwise offer to export everything twice over.
-    if activeDay then
-        f.wholeDay:Show()
-        self:SetBackdropSolid(f.wholeDay,
-            self.exportWholeDay and {0.10,0.09,0.03,0.95} or {0.045,0.045,0.05,0.85},
-            self.exportWholeDay and {0.95,0.78,0.05,1} or {0.20,0.21,0.22,1})
-    else
-        f.wholeDay:Hide()
-        self.exportWholeDay = false
-    end
-
     -- Two conditions the command depends on, neither of them obvious: the data
     -- has to be on disk, and a relative path only resolves from one folder.
     local stored = RaidPulseDB.config and RaidPulseDB.config.exportToolPath
-    local what = self.exportWholeDay
-        and ("tutto il " .. tostring(activeDay))
-        or (chosen.stamp .. " - " .. chosen.label
-            .. (activeDay and (", solo il " .. activeDay) or ""))
+
+    local what
+    if ticked == 0 then
+        what = activeDay and ("tutto il " .. activeDay) or "tutto lo storico"
+    elseif ticked == 1 then
+        what = "1 sezione" .. (activeDay and (" del " .. activeDay) or "")
+    else
+        what = ticked .. " sezioni" .. (activeDay and (" del " .. activeDay) or "")
+    end
 
     f.hint:SetText("Selezionato: " .. what
         .. ".  Le SavedVariables si scrivono al /reload: un tentativo appena "
@@ -321,18 +345,23 @@ function MCA:ShowExportWindow(data)
         f.sub:SetPoint("TOPLEFT", 16, -40)
         f.sub:SetText("Giorno, poi la serata di raid o la dungeon da esportare:")
 
-        f.wholeDay = CreateFrame("Button", nil, f, "BackdropTemplate")
-        -- Anchored to the right edge rather than counted out from the left,
-        -- so it cannot land outside the frame when the day count changes.
-        f.wholeDay:SetPoint("TOPRIGHT", -20, -60)
-        f.wholeDay:SetSize(126, 22)
-        local wholeLabel = f.wholeDay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        wholeLabel:SetPoint("CENTER")
-        wholeLabel:SetText("Tutto il giorno")
-        f.wholeDay:SetScript("OnClick", function()
-            MCA.exportWholeDay = not MCA.exportWholeDay
-            MCA:RefreshExportWindow()
-        end)
+        -- No "whole day" button any more: no tick at all already means the
+        -- whole day, which is one rule instead of two controls that could
+        -- disagree.
+        local function pickButton(text, x)
+            local button = CreateFrame("Button", nil, f, "BackdropTemplate")
+            button:SetPoint("BOTTOMLEFT", x, 14)
+            button:SetSize(140, 24)
+            MCA:SetBackdropSolid(button, {0.06,0.055,0.025,0.88}, {0.45,0.35,0.02,1})
+            local label = button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            label:SetPoint("CENTER")
+            label:SetText(text)
+            label:SetTextColor(1, 0.82, 0)
+            return button
+        end
+
+        f.selectAll = pickButton("Seleziona tutto", 20)
+        f.selectNone = pickButton("Deseleziona tutto", 170)
 
         local scroll = CreateFrame("ScrollFrame", "RaidPulseExportScroll", f,
             "UIPanelScrollFrameTemplate")
@@ -375,7 +404,10 @@ function MCA:ShowExportWindow(data)
     -- Opens on the group of whatever is on screen, which is the likely one
     -- right after a pull, and stays wherever it was left otherwise.
     local fromReport = self:GetExportGroupKey(data)
-    if fromReport then self.exportSelection = fromReport end
+    if fromReport then
+        self.exportDay = nil
+        self.exportSelected = {[fromReport] = true}
+    end
 
     f:Show()
     self:RefreshExportWindow()

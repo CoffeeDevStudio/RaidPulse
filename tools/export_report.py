@@ -667,10 +667,27 @@ def selector_of(box):
 
 
 def select_containers(containers, wanted):
-    """An index from --list, a groupID, or part of a name."""
+    """Zero or more selectors, each an index from --list, a groupID, or part of
+    a name. The union is returned in the order the sections already have, so a
+    page with several dungeons in it reads chronologically rather than in the
+    order they were typed."""
     if not wanted:
         return containers
 
+    if isinstance(wanted, str):
+        wanted = [wanted]
+
+    picked, seen = [], set()
+    for one in wanted:
+        for box in select_one(containers, one):
+            if box["key"] not in seen:
+                seen.add(box["key"])
+                picked.append(box)
+
+    return [b for b in containers if b["key"] in seen]
+
+
+def select_one(containers, wanted):
     needle = wanted.strip().lower()
     if needle.isdigit():
         i = int(needle)
@@ -930,9 +947,9 @@ def main():
     ap.add_argument("--day", metavar="GIORNO",
                     help="solo i tentativi di questo giorno: dd/mm/aaaa, dd/mm "
                          "o aaaa-mm-gg")
-    ap.add_argument("--only", metavar="SEZIONE",
+    ap.add_argument("--only", metavar="SEZIONE", action="append",
                     help="only this section: its number from --list, its groupID, "
-                         "or part of its name")
+                         "or part of its name. Ripetibile: --only A --only B")
     args = ap.parse_args()
 
     sv = args.sv or find_saved_variables()
@@ -968,7 +985,9 @@ def main():
 
     out_path = args.out
     if not out_path:
-        if args.only and len(chosen) == 1:
+        if day and args.only:
+            out_path = "report-%s.html" % day.replace("/", "-")
+        elif args.only and len(chosen) == 1:
             # Short and predictable: the whole title makes a filename nobody
             # can type twice.
             box = chosen[0]
@@ -987,7 +1006,7 @@ def main():
     if day:
         note = " &middot; giorno: %s" % esc(day)
     if args.only:
-        note = note + " &middot; filtro: %s" % esc(args.only)
+        note = note + " &middot; filtro: %s" % esc(", ".join(args.only))
 
     page = render(db, sv, chosen, total_sections=len(containers), filter_note=note)
 
