@@ -324,14 +324,61 @@ METRICS = [
      "get": lambda p: _first(p, "blizzardHps", "hps"), "color": "#2ecc71"},
     {"key": "healing", "label": "Heal Overall",   "kind": "rate",  "better": 1,
      "get": lambda p: _first(p, "blizzardHealingDone", "healingDone"), "color": "#2ecc71"},
-    {"key": "taken",   "label": "Damage Taken",   "kind": "rate",  "better": 0,
-     "get": lambda p: _first(p, "blizzardDamageTaken", "damageTaken"), "color": "#e67e22"},
+    {"key": "taken",   "label": "Damage Taken/s", "kind": "rate",  "better": 0,
+     "get": lambda p: num(p.get("_dtps")), "color": "#e67e22"},
     {"key": "parse",   "label": "Parse",          "kind": "count", "better": 1,
      "get": lambda p: num(p.get("mcaRating")), "color": "#c74ffb"},
     {"key": "deaths",  "label": "Morti",          "kind": "count", "better": -1,
      "get": lambda p: num(p.get("deaths")), "color": "#c0392b"},
 ]
 METRIC_BY_KEY = {m["key"]: m for m in METRICS}
+
+# The shape each metric is drawn as on a player card. Chosen by the question
+# the metric answers, not by its name.
+#
+#   auto     bars while the columns are few, a line once they are many: with
+#            eighteen pulls a row of bars is a picket fence, and the message is
+#            the trajectory. A line between two pulls asserts a continuity that
+#            does not exist -- nothing happened between pull 3 and pull 4 --
+#            so it is never the default, only what many points earn.
+#   gauge    a fixed 0..100 axis. A percentile auto-scaled to its own maximum
+#            is a lie: a parse of 24 filled the card.
+#   scatter  duration against total, where a diagonal is a constant rate. A
+#            total is nearly always its rate times the length of the pull, so
+#            as bars it repeats the rate chart; against duration it finally
+#            answers whether a big number was a good pull or a long one.
+#   timeline the pull from 0 to its duration with a tick per death. For deaths
+#            the count is not the story, the moment is.
+CHART_FORM = {
+    "dps": "auto", "hps": "auto", "taken": "auto",
+    "damage": "scatter", "healing": "scatter",
+    "parse": "gauge",
+    "deaths": "timeline",
+}
+
+# Past this many columns a line reads better than bars.
+LINE_FROM = 7
+
+
+def normalise(history):
+    """Derived fields the metrics read, computed once per load.
+
+    Damage taken is charted per second: the total rewards whoever survived
+    longest, which is the opposite of what it is meant to show. The meter
+    supplies a per-second figure, and where it only supplied a total the pull's
+    own duration turns it into one.
+    """
+    for report in history:
+        duration = num(report.get("duration"))
+        for row in (report.get("players") or {}).values():
+            if not isinstance(row, dict):
+                continue
+            dtps = num(row.get("blizzardDtps"))
+            if dtps <= 0:
+                total = _first(row, "blizzardDamageTaken", "damageTaken")
+                dtps = (total / duration) if (total > 0 and duration > 0) else 0
+            row["_dtps"] = dtps
+    return history
 
 ROLE_CHARTS = {
     "TANK":    ["taken", "dps", "damage", "parse", "deaths"],
@@ -539,36 +586,27 @@ def nice_ticks(top, wanted=3, integer=False):
     return ticks
 
 
-def svg_chart(metric, series, width=320, height=170):
-    """A column chart in inline SVG: no script, no external asset, prints.
+def chart_frame(width, height, top, fmt, integer=False, bands=None):
+    """The shared furniture: gridlines, their labels, and the baseline.
 
-    Carries three things beyond the bars themselves -- a labelled scale, a
-    dashed line at the average of what is shown, and the values on top. The
-    average is the reference the old chart lacked: without it a column says
-    only "taller than the one beside it", and the question is almost always
-    whether a pull was above or below normal.
+    Returns (parts, geometry) so each form draws its own marks on top of one
+    set of axes rather than inventing its own.
     """
     pad_l, pad_r, pad_b, pad_t = 42, 8, 34, 20
     plot_h = height - pad_b - pad_t
     plot_w = width - pad_l - pad_r
-    fmt = formatter(metric)
-
-    values = [p["value"] for p in series]
-    top = max(values + [0])
-
-    # Averaged over the attempts that have a figure, not over the zeroes. A
-    # zero here is "absent", or a metric that does not apply to this player --
-    # counting it as a performance of nothing drags the reference line below
-    # every column it is supposed to be a reference for.
-    real = [v for v in values if v > 0]
-    average = (sum(real) / len(real)) if real else 0
 
     def y_of(value):
         return pad_t + plot_h - (value / top * plot_h if top > 0 else 0)
 
     parts = ['<svg viewBox="0 0 %d %d" class="chart" role="img">' % (width, height)]
 
-    for tick in nice_ticks(top, integer=(metric["kind"] == "count")):
+    for lo, hi, cls in (bands or []):
+        y1, y2 = y_of(hi), y_of(lo)
+        parts.append('<rect x="%g" y="%g" width="%g" height="%g" class="%s"/>'
+                     % (pad_l, y1, plot_w, max(0, y2 - y1), cls))
+
+    for tick in nice_ticks(top, integer=integer):
         y = y_of(tick)
         parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="grid"/>'
                      % (pad_l, y, width - pad_r, y))
@@ -578,12 +616,40 @@ def svg_chart(metric, series, width=320, height=170):
     parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="axis"/>'
                  % (pad_l, pad_t + plot_h, width - pad_r, pad_t + plot_h))
 
+    return parts, (pad_l, pad_r, pad_t, plot_w, plot_h, y_of)
+
+
+def average_line(parts, geometry, width, average, fmt):
+    """The reference a single column cannot give: above or below normal."""
+    pad_l, pad_r, _, _, _, y_of = geometry
+    y = y_of(average)
+    parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="avg"/>'
+                 % (pad_l, y, width - pad_r, y))
+    parts.append('<text x="%g" y="%g" class="a">media %s</text>'
+                 % (width - pad_r, y - 4, esc(fmt(average))))
+
+
+def outcome_band(parts, x, y, w, colour):
+    parts.append('<rect x="%g" y="%g" width="%g" height="4" fill="%s"/>'
+                 % (x, y, w, colour))
+
+
+def svg_bars(metric, series, width=320, height=170, fixed_top=None, bands=None):
+    fmt = formatter(metric)
+    values = [p["value"] for p in series]
+    real = [v for v in values if v > 0]
+    top = fixed_top or max(values + [0])
+    average = (sum(real) / len(real)) if real else 0
+
+    parts, geo = chart_frame(width, height, top, fmt,
+                             integer=(metric["kind"] == "count"), bands=bands)
+    pad_l, pad_r, pad_t, plot_w, plot_h, y_of = geo
+
     slot = plot_w / max(len(series), 1)
     bar_w = max(6, min(34, slot - 10))
 
     for i, point in enumerate(series):
-        value = point["value"]
-        y = y_of(value)
+        y = y_of(min(point["value"], top) if top else 0)
         bar_h = max(1, pad_t + plot_h - y)
         cx = pad_l + (i + 0.5) * slot
         x = cx - bar_w / 2
@@ -593,22 +659,205 @@ def svg_chart(metric, series, width=320, height=170):
                         "1" if point["last"] else "0.55"))
         parts.append('<text x="%g" y="%g" class="v">%s</text>'
                      % (cx, pad_t + plot_h - bar_h - 5, esc(point["text"])))
-        parts.append('<rect x="%g" y="%g" width="%g" height="4" fill="%s"/>'
-                     % (x, pad_t + plot_h + 4, bar_w, point["outcome"]))
+        outcome_band(parts, x, pad_t + plot_h + 4, bar_w, point["outcome"])
         parts.append('<text x="%g" y="%g" class="x">%s</text>'
                      % (cx, height - 6, esc(point["label"])))
 
-    # Drawn last so it reads over the columns, and only when there is more than
-    # one: the average of a single attempt is that attempt.
-    if len(real) > 1 and average > 0:
-        y = y_of(average)
-        parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="avg"/>'
-                     % (pad_l, y, width - pad_r, y))
-        parts.append('<text x="%g" y="%g" class="a">media %s</text>'
-                     % (width - pad_r, y - 4, esc(fmt(average))))
+    if len(real) > 1 and average > 0 and not fixed_top:
+        average_line(parts, geo, width, average, fmt)
 
     parts.append("</svg>")
     return "".join(parts)
+
+
+def svg_line(metric, series, width=320, height=170):
+    """Many attempts: the trajectory is the message and bars become a fence.
+
+    Only the ends and the extremes are labelled -- eighteen numbers along a
+    line is the wall of figures this was meant to replace.
+    """
+    fmt = formatter(metric)
+    values = [p["value"] for p in series]
+    real = [v for v in values if v > 0]
+    top = max(values + [0])
+    average = (sum(real) / len(real)) if real else 0
+
+    parts, geo = chart_frame(width, height, top, fmt,
+                             integer=(metric["kind"] == "count"))
+    pad_l, pad_r, pad_t, plot_w, plot_h, y_of = geo
+
+    slot = plot_w / max(len(series), 1)
+
+    def x_of(i):
+        return pad_l + (i + 0.5) * slot
+
+    drawn = [(i, p) for i, p in enumerate(series) if p["value"] > 0]
+    if drawn:
+        points = " ".join("%g,%g" % (x_of(i), y_of(p["value"])) for i, p in drawn)
+        parts.append('<polyline points="%s" class="trend"/>' % points)
+
+    highest = max(drawn, key=lambda ip: ip[1]["value"])[0] if drawn else None
+    lowest = min(drawn, key=lambda ip: ip[1]["value"])[0] if drawn else None
+    labelled = {highest, lowest, drawn[0][0], drawn[-1][0]} if drawn else set()
+
+    for i, point in drawn:
+        x, y = x_of(i), y_of(point["value"])
+        parts.append('<circle cx="%g" cy="%g" r="%g" fill="%s" opacity="%s"/>'
+                     % (x, y, 3.5 if point["last"] else 2.5, point["color"],
+                        "1" if point["last"] else "0.75"))
+        if i in labelled:
+            parts.append('<text x="%g" y="%g" class="v">%s</text>'
+                         % (x, y - 6, esc(point["text"])))
+
+    for i, point in enumerate(series):
+        outcome_band(parts, x_of(i) - slot / 2 + 2, pad_t + plot_h + 4,
+                     max(3, slot - 4), point["outcome"])
+
+    # Every label would overlap, so only the two ends carry a time.
+    if series:
+        parts.append('<text x="%g" y="%g" class="x" text-anchor="start">%s</text>'
+                     % (pad_l, height - 6, esc(series[0]["label"])))
+        if len(series) > 1:
+            parts.append('<text x="%g" y="%g" class="x" text-anchor="end">%s</text>'
+                         % (width - pad_r, height - 6, esc(series[-1]["label"])))
+
+    if len(real) > 1 and average > 0:
+        average_line(parts, geo, width, average, fmt)
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def mmss(seconds):
+    seconds = int(max(0, seconds))
+    return "%d:%02d" % (seconds // 60, seconds % 60)
+
+
+def svg_scatter(metric, points, width=320, height=170):
+    """Duration against total, where a diagonal is a constant rate.
+
+    A total is nearly always its rate times the length of the pull. Drawn as
+    bars it says what the rate chart already said; against duration it answers
+    the question the bars could not -- was the big number a good pull, or a
+    long one.
+    """
+    fmt = formatter(metric)
+    tops = [p["value"] for p in points]
+    top = max(tops + [0])
+    longest = max([p["duration"] for p in points] + [1])
+
+    parts, geo = chart_frame(width, height, top, fmt)
+    pad_l, pad_r, pad_t, plot_w, plot_h, y_of = geo
+
+    def x_of(duration):
+        return pad_l + (duration / longest) * plot_w if longest > 0 else pad_l
+
+    # The player's own average rate: points above it beat their usual pace.
+    total = sum(p["value"] for p in points)
+    seconds = sum(p["duration"] for p in points)
+    if total > 0 and seconds > 0:
+        rate = total / seconds
+        end_y = y_of(min(rate * longest, top))
+        parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="avg"/>'
+                     % (pad_l, y_of(0), x_of(longest), end_y))
+        parts.append('<text x="%g" y="%g" class="a">ritmo medio %s/s</text>'
+                     % (width - pad_r, pad_t + 8, esc(fmt(rate))))
+
+    for point in points:
+        x, y = x_of(point["duration"]), y_of(point["value"])
+        parts.append('<circle cx="%g" cy="%g" r="%g" fill="%s" opacity="%s"/>'
+                     % (x, y, 4.5 if point["last"] else 3.5, point["color"],
+                        "1" if point["last"] else "0.7"))
+        parts.append('<circle cx="%g" cy="%g" r="1.6" fill="%s"/>'
+                     % (x, y, point["outcome"]))
+
+    parts.append('<text x="%g" y="%g" class="x" text-anchor="start">0:00</text>'
+                 % (pad_l, height - 6))
+    parts.append('<text x="%g" y="%g" class="x" text-anchor="end">%s</text>'
+                 % (width - pad_r, height - 6, esc(mmss(longest))))
+    parts.append('<text x="%g" y="%g" class="x">durata</text>'
+                 % (pad_l + plot_w / 2, height - 6))
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def svg_deaths(strips, width=320, height=170):
+    """One row per attempt, from the pull's start to its end, a tick per death.
+
+    The count of deaths is not the story: two pulls with twenty and
+    twenty-three deaths were a collapse at 1:40 and a seven-minute grind, and
+    the bar chart called the second one worse.
+    """
+    pad_l, pad_r, pad_t, clock_w = 42, 8, 18, 42
+    plot_w = width - pad_l - pad_r - clock_w
+    rows = max(len(strips), 1)
+    row_h = min(18, (height - pad_t - 16) / rows)
+    longest = max([s["duration"] for s in strips] + [1])
+
+    parts = ['<svg viewBox="0 0 %d %d" class="chart" role="img">' % (width, height)]
+
+    for index, strip in enumerate(strips):
+        y = pad_t + index * row_h
+        mid = y + row_h / 2
+
+        # Rows are as long as the pull was, against the longest one shown.
+        # Normalising each row to its own duration drew a 2:38 wipe and a 7:39
+        # one at the same width, which hides the very thing the strip exists to
+        # show.
+        duration = strip["duration"] or 1
+        row_w = max(6, plot_w * duration / longest)
+
+        parts.append('<text x="%g" y="%g" class="t">%s</text>'
+                     % (pad_l - 6, mid + 3, esc(strip["label"])))
+        parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="grid"/>'
+                     % (pad_l, mid, pad_l + row_w, mid))
+        parts.append('<rect x="%g" y="%g" width="3" height="%g" fill="%s"/>'
+                     % (pad_l + row_w, mid - row_h / 4, row_h / 2, strip["outcome"]))
+        parts.append('<text x="%g" y="%g" class="t" text-anchor="start">%s</text>'
+                     % (pad_l + row_w + 7, mid + 3, esc(mmss(duration))))
+
+        def x_at(t, row_w=row_w, duration=duration):
+            return pad_l + min(1.0, max(0.0, t / duration)) * row_w
+
+        # The rest of the group, faint: a death alone says little, a death in
+        # the middle of eleven others says what happened.
+        for t in strip["others"]:
+            parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="dother"/>'
+                         % (x_at(t), mid - row_h / 3, x_at(t), mid + row_h / 3))
+        for t in strip["own"]:
+            parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="dself"/>'
+                         % (x_at(t), mid - row_h / 2, x_at(t), mid + row_h / 2))
+
+    parts.append('<text x="%g" y="%g" class="x" text-anchor="start">inizio</text>'
+                 % (pad_l, height - 4))
+    parts.append('<text x="%g" y="%g" class="x" text-anchor="end">fine pull</text>'
+                 % (width - pad_r, height - 4))
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def death_strips(fight, player_name):
+    strips = []
+    for i, report in enumerate(fight["reports"]):
+        own, others = [], []
+        for row in (report.get("players") or {}).values():
+            if not isinstance(row, dict):
+                continue
+            when_died = num(row.get("deathTime"))
+            if when_died <= 0:
+                continue
+            (own if row.get("name") == player_name else others).append(when_died)
+
+        strips.append({
+            "label": attempt_label(report),
+            "duration": num(report.get("duration")),
+            "own": sorted(own),
+            "others": sorted(others),
+            "outcome": KILL if report.get("result") else WIPE,
+            "last": i == len(fight["reports"]) - 1,
+        })
+    return strips
 
 
 def chart_for(fight, player_name, metric_key, players):
@@ -616,6 +865,7 @@ def chart_for(fight, player_name, metric_key, players):
     player = players.get(player_name) or {}
     color = class_color(player) if metric["color"] == "class" else metric["color"]
     fmt = formatter(metric)
+    form = CHART_FORM.get(metric_key, "auto")
 
     series, values = [], []
     for i, report in enumerate(fight["reports"]):
@@ -626,6 +876,7 @@ def chart_for(fight, player_name, metric_key, players):
             "value": value,
             "text": fmt(value),
             "label": attempt_label(report),
+            "duration": num(report.get("duration")),
             "color": color,
             "outcome": KILL if report.get("result") else WIPE,
             "last": i == len(fight["reports"]) - 1,
@@ -645,8 +896,25 @@ def chart_for(fight, player_name, metric_key, players):
     if max(values or [0]) <= 0 and metric_key != "deaths":
         note = '<span class="flat">non rilevato</span>'
 
+    if form == "timeline":
+        strips = death_strips(fight, player_name)
+        total = sum(len(s["own"]) for s in strips)
+        note = '<span class="flat">%d in %d pull</span>' % (total, len(strips))
+        body = svg_deaths(strips)
+    elif form == "gauge":
+        # 0..100 fixed, with the half below the median shaded: a percentile
+        # only means anything against the whole range.
+        body = svg_bars(metric, series, fixed_top=100,
+                        bands=[(0, 50, "band")])
+    elif form == "scatter" and any(p["duration"] > 0 for p in series):
+        body = svg_scatter(metric, [p for p in series if p["value"] > 0])
+    elif form == "auto" and len(series) >= LINE_FROM:
+        body = svg_line(metric, series)
+    else:
+        body = svg_bars(metric, series)
+
     return ('<figure class="card"><figcaption>%s %s</figcaption>%s</figure>'
-            % (esc(metric["label"]), note, svg_chart(metric, series)))
+            % (esc(metric["label"]), note, body))
 
 
 def compare_table(fight, metric, players):
@@ -897,6 +1165,11 @@ td .n { position:relative; }
 .chart .avg { stroke:#8b8f96; stroke-width:1; stroke-dasharray:4 3; }
 .chart text.t { fill:#6f747c; font-size:8px; text-anchor:end; }
 .chart text.a { fill:#8b8f96; font-size:8px; text-anchor:end; }
+.chart .band { fill:rgba(255,255,255,0.035); }
+.chart .trend { fill:none; stroke:#7f8792; stroke-width:1.5;
+                stroke-linejoin:round; stroke-linecap:round; }
+.chart .dother { stroke:#5b6068; stroke-width:1.5; }
+.chart .dself { stroke:#ff5555; stroke-width:2.5; }
 .chart text { fill:#9aa0a8; font-size:9px; text-anchor:middle;
               font-family:"Segoe UI",system-ui,sans-serif; }
 .chart text.v { fill:#d6dae0; }
@@ -1053,7 +1326,7 @@ def main():
                  "WTF/Account/<id>/SavedVariables/RaidPulse.lua")
 
     db = load_saved_variables(sv)
-    history = as_list((db or {}).get("history") or {})
+    history = normalise(as_list((db or {}).get("history") or {}))
 
     day = parse_day(args.day) if args.day else None
     if day:

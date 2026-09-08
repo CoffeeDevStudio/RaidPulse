@@ -2401,16 +2401,21 @@ end
 -- average of what is shown. The average is the reference the chart used to
 -- lack: without it a column says only "taller than the one beside it", and the
 -- question is almost always whether a pull was above or below normal.
-function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCount)
+-- `fixedMax` pins the axis instead of scaling it to the tallest column, and
+-- `bandTo` shades everything below a value. Both exist for the parse: it is a
+-- percentile, and a percentile scaled to its own maximum is a lie -- a parse of
+-- 24 filled the card exactly like a parse of 99.
+function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCount,
+                          fixedMax, bandTo)
     local card = self:Panel(parent, {"TOPLEFT", parent, "TOPLEFT", x, y}, w, h)
 
     self:Text(card, title, "GameFontNormal",
         {"TOPLEFT", card, "TOPLEFT", 10, -8}, w - 20, self:UIColor("accent"))
 
-    local maxV, sum, counted = 0, 0, 0
+    local maxV, sum, counted = fixedMax or 0, 0, 0
     for _, point in ipairs(series) do
         local value = point.value or 0
-        maxV = math.max(maxV, value)
+        if not fixedMax then maxV = math.max(maxV, value) end
         -- Averaged over the attempts that have a figure. A zero is "absent",
         -- or a metric that does not apply to this player; counting it as a
         -- performance of nothing drags the line below every column it is a
@@ -2431,6 +2436,14 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCoun
     local function yOf(value)
         if maxV <= 0 then return baseline end
         return baseline + math.min(plotH, value / maxV * plotH)
+    end
+
+    if bandTo and maxV > 0 then
+        local bandTop, bandBottom = yOf(bandTo), yOf(0)
+        local band = self:AcquireTexture(card, "BACKGROUND")
+        band:SetColorTexture(1, 1, 1, 0.035)
+        band:SetPoint("TOPLEFT", card, "TOPLEFT", axisW, bandTop)
+        band:SetSize(w - axisW - 10, math.max(1, bandTop - bandBottom))
     end
 
     for _, tick in ipairs(niceTicks(maxV, isCount)) do
@@ -2454,7 +2467,7 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCoun
     local barW = math.max(5, math.min(34, slot - 10))
 
     for i, point in ipairs(series) do
-        local value = point.value or 0
+        local value = math.min(point.value or 0, maxV > 0 and maxV or (point.value or 0))
         local barH = math.max(1, yOf(value) - baseline)
 
         local cx = axisW + (i - 0.5) * slot
@@ -2490,7 +2503,7 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCoun
 
     -- Drawn over the columns, and only when more than one attempt has a
     -- figure: the average of a single attempt is that attempt.
-    if counted > 1 and average > 0 then
+    if counted > 1 and average > 0 and not fixedMax then
         local ay = yOf(average)
         local line = self:AcquireTexture(card, "OVERLAY")
         line:SetColorTexture(0.55, 0.57, 0.60, 0.9)
@@ -2501,6 +2514,88 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCoun
             {"BOTTOMRIGHT", card, "TOPLEFT", w - 12, ay + 2}, 120,
             {0.55, 0.57, 0.60, 1}, "RIGHT")
     end
+
+    return card
+end
+
+local function formatClock(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- One row per attempt, from the pull's start to its end, a tick per death.
+--
+-- The count of deaths is not the story: two pulls of Ula'tek with twenty and
+-- twenty-three deaths were a collapse at 1:40 and a seven-minute grind, and
+-- the bar chart called the second one worse. The rest of the group is drawn
+-- faint behind, because a death on its own says little and a death in the
+-- middle of eleven others says what happened.
+function MCA:DrawDeathStrip(parent, x, y, w, h, title, strips)
+    local card = self:Panel(parent, {"TOPLEFT", parent, "TOPLEFT", x, y}, w, h)
+
+    self:Text(card, title, "GameFontNormal",
+        {"TOPLEFT", card, "TOPLEFT", 10, -8}, w - 20, self:UIColor("accent"))
+
+    local axisW, padT, clockW = 40, 30, 46
+    local plotW = w - axisW - 14 - clockW
+    local rows = math.max(#strips, 1)
+    local rowH = math.min(20, (h - padT - 18) / rows)
+
+    -- Rows are as long as the pull was, against the longest one shown.
+    -- Normalising each row to its own duration drew a 2:38 wipe and a 7:39 one
+    -- at the same width, which hides the very thing the strip exists to show.
+    local longest = 1
+    for _, strip in ipairs(strips) do
+        longest = math.max(longest, tonumber(strip.duration) or 0)
+    end
+
+    for index, strip in ipairs(strips) do
+        local mid = -(padT + (index - 0.5) * rowH)
+        local duration = (tonumber(strip.duration) or 0) > 0 and strip.duration or 1
+        local rowW = math.max(6, plotW * duration / longest)
+
+        self:Text(card, strip.label, "GameFontNormalSmall",
+            {"RIGHT", card, "TOPLEFT", axisW - 6, mid}, axisW - 10,
+            {0.44, 0.46, 0.49, 1}, "RIGHT")
+
+        local line = self:AcquireTexture(card, "ARTWORK")
+        line:SetColorTexture(0.15, 0.16, 0.18, 1)
+        line:SetPoint("TOPLEFT", card, "TOPLEFT", axisW, mid)
+        line:SetSize(rowW, 1)
+
+        local cap = self:AcquireTexture(card, "ARTWORK")
+        local o = strip.outcome
+        cap:SetColorTexture(o[1], o[2], o[3], 1)
+        cap:SetPoint("TOPLEFT", card, "TOPLEFT", axisW + rowW, mid + rowH / 4)
+        cap:SetSize(3, math.max(2, rowH / 2))
+
+        local function tick(when, colour, height, alpha)
+            local at = math.min(1, math.max(0, when / duration))
+            local mark = self:AcquireTexture(card, "OVERLAY")
+            mark:SetColorTexture(colour[1], colour[2], colour[3], alpha)
+            mark:SetPoint("TOP", card, "TOPLEFT", axisW + at * rowW, mid + height / 2)
+            mark:SetSize(2, height)
+        end
+
+        for _, when in ipairs(strip.others) do
+            tick(when, {0.36, 0.38, 0.41}, math.max(4, rowH * 0.55), 1)
+        end
+        for _, when in ipairs(strip.own) do
+            tick(when, self:UIColor("red"), math.max(6, rowH * 0.9), 1)
+        end
+
+        -- Past the end of the row, in the gutter kept for it, so it cannot
+        -- sit on top of the deaths that happen as a pull ends.
+        self:Text(card, formatClock(duration), "GameFontNormalSmall",
+            {"LEFT", card, "TOPLEFT", axisW + rowW + 7, mid}, clockW - 10,
+            {0.44, 0.46, 0.49, 1}, "LEFT")
+    end
+
+    self:Text(card, "inizio", "GameFontNormalSmall",
+        {"TOPLEFT", card, "TOPLEFT", axisW, -(h - 16)}, 60, self:UIColor("gray"))
+    self:Text(card, "fine pull", "GameFontNormalSmall",
+        {"TOPRIGHT", card, "TOPLEFT", axisW + plotW, -(h - 16)}, 70,
+        self:UIColor("gray"), "RIGHT")
 
     return card
 end
@@ -2964,12 +3059,46 @@ function MCA:DrawPlayerCharts(parent, data, y)
             formatValue = function(v) return tostring(math.floor(v or 0)) end
         end
 
-        self:DrawBarChart(parent,
-            PAGE_X + PAGE_PAD + (drawn % cols) * (chartW + gapX),
-            top - math.floor(drawn / cols) * (chartH + gapY),
-            chartW, chartH,
-            metric.label .. note,
-            series, formatValue, metric.kind == "count")
+        local cardX = PAGE_X + PAGE_PAD + (drawn % cols) * (chartW + gapX)
+        local cardY = top - math.floor(drawn / cols) * (chartH + gapY)
+
+        if metric.key == "deaths" then
+            -- Where in the pull, not how many.
+            local strips, mine = {}, 0
+            for _, attempt in ipairs(attempts) do
+                local own, others = {}, {}
+                for _, row in pairs(attempt.report.players or {}) do
+                    local when = tonumber(row.deathTime) or 0
+                    if when > 0 then
+                        if row.name == sel.name then
+                            own[#own + 1] = when
+                        else
+                            others[#others + 1] = when
+                        end
+                    end
+                end
+                mine = mine + #own
+                strips[#strips + 1] = {
+                    label = attemptLabel(attempt.report),
+                    duration = tonumber(attempt.report.duration) or 0,
+                    own = own, others = others,
+                    outcome = outcomeColor(attempt.report),
+                }
+            end
+
+            self:DrawDeathStrip(parent, cardX, cardY, chartW, chartH,
+                string.format("%s  |cff999999(%d in %d pull)|r",
+                    metric.label, mine, #strips),
+                strips)
+        elseif metric.key == "parse" then
+            -- 0..100 fixed, with everything below the median shaded.
+            self:DrawBarChart(parent, cardX, cardY, chartW, chartH,
+                metric.label .. note, series, formatValue, true, 100, 50)
+        else
+            self:DrawBarChart(parent, cardX, cardY, chartW, chartH,
+                metric.label .. note, series, formatValue,
+                metric.kind == "count")
+        end
         drawn = drawn + 1
     end
 
