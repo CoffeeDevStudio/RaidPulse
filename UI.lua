@@ -2252,10 +2252,11 @@ function MCA:DrawComparePage(parent, data, y)
                     end
 
                     if metric.kind == "rate" then
+                        -- Deaths are their own metric and their own chart. Hung
+                        -- off the end of a rate they read as part of it, and a
+                        -- column of "141k +2" is harder to scan than the
+                        -- figures alone.
                         text = self:FormatMetricValue(value)
-                        -- A death explains a drop; without it the number invites
-                        -- the wrong conclusion.
-                        if (p.deaths or 0) > 0 then text = text .. " +" .. p.deaths end
                     else
                         text = tostring(math.floor(value))
                     end
@@ -2274,7 +2275,7 @@ function MCA:DrawComparePage(parent, data, y)
     local legend
     if metric.kind == "rate" then
         legend = "Confronto su " .. metric.label .. ". Verde/rosso = variazione oltre il 5% "
-            .. "rispetto al tentativo precedente. \"+N\" = morti. \"✖\" = wipe."
+            .. "rispetto al tentativo precedente. Le morti sono nella metrica Morti."
     else
         legend = "Confronto su " .. metric.label .. ". Verde/rosso = qualunque variazione "
             .. "rispetto al tentativo precedente"

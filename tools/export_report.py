@@ -687,8 +687,6 @@ def compare_table(fight, metric, players):
             state = verdict(metric, previous, value) if previous is not None else None
             cls = {"better": "up", "worse": "down"}.get(state, "")
             text = fmt(value)
-            if metric["kind"] == "rate" and num(row.get("deaths")) > 0:
-                text += " +%d" % int(num(row["deaths"]))
             # The number stays; the bar behind it is what makes a column of
             # twenty-five of them scannable. Widths are shares of the best
             # value in that column, so the eye compares within an attempt.
@@ -844,9 +842,9 @@ def night_table(container, metric, players):
             if not isinstance(row, dict):
                 cells.append('<td class="absent">-</td>')
                 continue
+            # Deaths are their own metric and their own chart; hung off the
+            # end of a rate they read as part of it.
             text = fmt(metric["get"](row))
-            if metric["kind"] == "rate" and num(row.get("deaths")) > 0:
-                text += " +%d" % int(num(row["deaths"]))
             cells.append("<td>%s</td>" % text)
         rows.append("<tr>%s</tr>" % "".join(cells))
 
@@ -978,7 +976,8 @@ def render(db, sv_path, containers, total_sections=None, filter_note=""):
                    "il 5% rispetto al tentativo precedente (qualunque variazione "
                    "per Parse e Morti). La tabella di tutti i tentativi non \u00e8 "
                    "colorata: fra un boss e l\u2019altro una differenza non \u00e8 "
-                   "un miglioramento. &quot;+N&quot; = morti.</div>")
+                   "un miglioramento. Le morti hanno una tabella e un grafico "
+                   "propri.</div>")
         out.append("</section>")
 
     out.append("</main></body></html>")
