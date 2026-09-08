@@ -634,7 +634,7 @@ def outcome_band(parts, x, y, w, colour):
                  % (x, y, w, colour))
 
 
-def svg_bars(metric, series, width=320, height=170, fixed_top=None, bands=None):
+def svg_bars(metric, series, width=360, height=190, fixed_top=None, bands=None):
     fmt = formatter(metric)
     values = [p["value"] for p in series]
     real = [v for v in values if v > 0]
@@ -670,7 +670,7 @@ def svg_bars(metric, series, width=320, height=170, fixed_top=None, bands=None):
     return "".join(parts)
 
 
-def svg_line(metric, series, width=320, height=170):
+def svg_line(metric, series, width=360, height=190):
     """Many attempts: the trajectory is the message and bars become a fence.
 
     Only the ends and the extremes are labelled -- eighteen numbers along a
@@ -733,7 +733,7 @@ def mmss(seconds):
     return "%d:%02d" % (seconds // 60, seconds % 60)
 
 
-def svg_scatter(metric, points, width=320, height=170):
+def svg_scatter(metric, points, width=360, height=190):
     """Duration against total, where a diagonal is a constant rate.
 
     A total is nearly always its rate times the length of the pull. Drawn as
@@ -782,7 +782,7 @@ def svg_scatter(metric, points, width=320, height=170):
     return "".join(parts)
 
 
-def svg_deaths(strips, width=320, height=170):
+def svg_deaths(strips, width=360, height=190):
     """One row per attempt, from the pull's start to its end, a tick per death.
 
     The count of deaths is not the story: two pulls with twenty and
@@ -860,6 +860,14 @@ def death_strips(fight, player_name):
     return strips
 
 
+_CARD_SEQ = [0]
+
+
+def card_id():
+    _CARD_SEQ[0] += 1
+    return "c%d" % _CARD_SEQ[0]
+
+
 def chart_for(fight, player_name, metric_key, players):
     metric = METRIC_BY_KEY[metric_key]
     player = players.get(player_name) or {}
@@ -913,8 +921,18 @@ def chart_for(fight, player_name, metric_key, players):
     else:
         body = svg_bars(metric, series)
 
-    return ('<figure class="card"><figcaption>%s %s</figcaption>%s</figure>'
-            % (esc(metric["label"]), note, body))
+    # Enlarging is done with :target and no script at all. A page that has to
+    # survive being mailed around, opened from a file:// path and printed is
+    # not the place for a script that some viewer may refuse to run, and
+    # :target needs neither -- the card itself becomes the overlay, so nothing
+    # is duplicated either.
+    ident = card_id()
+    return ('<figure class="card" id="%s">'
+            '<figcaption>%s %s</figcaption>'
+            '<a class="open" href="#%s" title="Ingrandisci"></a>'
+            '<a class="close" href="#chiudi" title="Chiudi"></a>'
+            '%s</figure>'
+            % (ident, esc(metric["label"]), note, ident, body))
 
 
 def compare_table(fight, metric, players):
@@ -1155,7 +1173,32 @@ td .fill { position:absolute; left:0; top:3px; bottom:3px; border-radius:2px;
 td .n { position:relative; }
 .grid { display:flex; flex-wrap:wrap; gap:12px; }
 .card { margin:0; border:1px solid #232529; border-radius:5px; background:#131418;
-        padding:8px 6px 4px; width:360px; }
+        padding:8px 6px 4px; width:400px; position:relative; }
+.card:hover { border-color:#3a3d42; }
+
+/* The whole card is the button. No outline of its own: the border lighting up
+   on hover is the affordance, and a focus ring is added back for the keyboard
+   below. */
+.card .open { position:absolute; inset:0; z-index:2; border-radius:5px; }
+.card .open:focus-visible { outline:2px solid #ffd100; outline-offset:2px; }
+.card .close { display:none; }
+
+/* The dimming is a spread shadow on the card itself, not a dark panel behind
+   it. A negative z-index child paints after its parent's background and
+   border, so a panel would have covered the card's own frame and tinted it;
+   the shadow paints outside the border box and leaves the card untouched. */
+.card:target { position:fixed; left:3vw; right:3vw; top:4vh; width:auto;
+               z-index:60; padding:16px 18px 10px; border-color:#3a3d42;
+               box-shadow:0 0 0 100vmax rgba(0,0,0,0.72),
+                          0 18px 60px rgba(0,0,0,0.6); }
+.card:target .open { display:none; }
+.card:target figcaption { font-size:15px; padding-bottom:6px; }
+/* Transparent and behind the card, covering the viewport: it exists to catch
+   a click anywhere outside. */
+.card:target .close { display:block; position:fixed; inset:0; z-index:-1; }
+/* An explicit height with the default preserveAspectRatio: letting width drive
+   it would make a 400x190 card 1200px tall on a wide screen. */
+.card:target .chart { height:78vh; }
 .card figcaption { font-size:12px; color:#ffd100; padding:0 6px 2px; }
 .card figcaption .up { color:#55dd55; } .card figcaption .down { color:#ff5555; }
 .card figcaption .flat { color:#8b8f96; }
@@ -1250,7 +1293,7 @@ def render(db, sv_path, containers, total_sections=None, filter_note=""):
                    "per Parse e Morti). La tabella di tutti i tentativi non \u00e8 "
                    "colorata: fra un boss e l\u2019altro una differenza non \u00e8 "
                    "un miglioramento. Le morti hanno una tabella e un grafico "
-                   "propri.</div>")
+                   "propri. Clicca un grafico per ingrandirlo.</div>")
         out.append("</section>")
 
     out.append("</main></body></html>")
