@@ -17,6 +17,7 @@ old that file is.
 
 import argparse
 import base64
+import math
 import datetime as dt
 import glob
 import html
@@ -505,35 +506,106 @@ def ordered_players(fight, players, metric=None):
     )
 
 
-def svg_chart(metric, series, width=320, height=150):
-    """A column chart in inline SVG: no script, no external asset, prints."""
-    pad_l, pad_b, pad_t = 6, 34, 18
-    plot_h = height - pad_b - pad_t
-    inner_w = width - pad_l * 2
-    top = max([abs(p["value"]) for p in series] + [0])
+def nice_ticks(top, wanted=3, integer=False):
+    """Round gridline values at or below `top`.
 
-    slot = inner_w / max(len(series), 1)
-    bar_w = max(6, min(34, slot - 10))
+    Bars alone give a ratio and nothing else: 86k beside 36k looks the same as
+    860k beside 360k. A labelled scale is what turns the picture back into
+    quantities.
+
+    `wanted` is biased down by half a line, or a top of 16.7M picks a 10M step
+    and draws a single gridline where 5M would have drawn three. `integer`
+    keeps a count metric off fractional steps, which would otherwise label a
+    chart topping out at one death with "0" and "1".
+    """
+    if top <= 0:
+        return []
+
+    raw = top / (float(wanted) + 0.5)
+    magnitude = 10 ** math.floor(math.log10(raw))
+    step = 10 * magnitude
+    for candidate in (1, 2, 2.5, 5, 10):
+        if raw <= candidate * magnitude:
+            step = candidate * magnitude
+            break
+
+    if integer:
+        step = max(1, round(step))
+
+    ticks, value = [], step
+    while value <= top * 1.001:
+        ticks.append(value)
+        value += step
+    return ticks
+
+
+def svg_chart(metric, series, width=320, height=170):
+    """A column chart in inline SVG: no script, no external asset, prints.
+
+    Carries three things beyond the bars themselves -- a labelled scale, a
+    dashed line at the average of what is shown, and the values on top. The
+    average is the reference the old chart lacked: without it a column says
+    only "taller than the one beside it", and the question is almost always
+    whether a pull was above or below normal.
+    """
+    pad_l, pad_r, pad_b, pad_t = 42, 8, 34, 20
+    plot_h = height - pad_b - pad_t
+    plot_w = width - pad_l - pad_r
+    fmt = formatter(metric)
+
+    values = [p["value"] for p in series]
+    top = max(values + [0])
+
+    # Averaged over the attempts that have a figure, not over the zeroes. A
+    # zero here is "absent", or a metric that does not apply to this player --
+    # counting it as a performance of nothing drags the reference line below
+    # every column it is supposed to be a reference for.
+    real = [v for v in values if v > 0]
+    average = (sum(real) / len(real)) if real else 0
+
+    def y_of(value):
+        return pad_t + plot_h - (value / top * plot_h if top > 0 else 0)
 
     parts = ['<svg viewBox="0 0 %d %d" class="chart" role="img">' % (width, height)]
+
+    for tick in nice_ticks(top, integer=(metric["kind"] == "count")):
+        y = y_of(tick)
+        parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="grid"/>'
+                     % (pad_l, y, width - pad_r, y))
+        parts.append('<text x="%g" y="%g" class="t">%s</text>'
+                     % (pad_l - 6, y + 3, esc(fmt(tick))))
+
     parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="axis"/>'
-                 % (pad_l, pad_t + plot_h, width - pad_l, pad_t + plot_h))
+                 % (pad_l, pad_t + plot_h, width - pad_r, pad_t + plot_h))
+
+    slot = plot_w / max(len(series), 1)
+    bar_w = max(6, min(34, slot - 10))
 
     for i, point in enumerate(series):
-        bar_h = 1 if top <= 0 else max(1, point["value"] / top * plot_h)
+        value = point["value"]
+        y = y_of(value)
+        bar_h = max(1, pad_t + plot_h - y)
         cx = pad_l + (i + 0.5) * slot
         x = cx - bar_w / 2
-        y = pad_t + plot_h - bar_h
 
         parts.append('<rect x="%g" y="%g" width="%g" height="%g" fill="%s" opacity="%s"/>'
-                     % (x, y, bar_w, bar_h, point["color"], "1" if point["last"] else "0.55"))
+                     % (x, pad_t + plot_h - bar_h, bar_w, bar_h, point["color"],
+                        "1" if point["last"] else "0.55"))
         parts.append('<text x="%g" y="%g" class="v">%s</text>'
-                     % (cx, y - 4, esc(point["text"])))
-        # the outcome band, the same signal the addon draws under each column
+                     % (cx, pad_t + plot_h - bar_h - 5, esc(point["text"])))
         parts.append('<rect x="%g" y="%g" width="%g" height="4" fill="%s"/>'
                      % (x, pad_t + plot_h + 4, bar_w, point["outcome"]))
         parts.append('<text x="%g" y="%g" class="x">%s</text>'
                      % (cx, height - 6, esc(point["label"])))
+
+    # Drawn last so it reads over the columns, and only when there is more than
+    # one: the average of a single attempt is that attempt.
+    if len(real) > 1 and average > 0:
+        y = y_of(average)
+        parts.append('<line x1="%g" y1="%g" x2="%g" y2="%g" class="avg"/>'
+                     % (pad_l, y, width - pad_r, y))
+        parts.append('<text x="%g" y="%g" class="a">media %s</text>'
+                     % (width - pad_r, y - 4, esc(fmt(average))))
 
     parts.append("</svg>")
     return "".join(parts)
@@ -589,24 +661,40 @@ def compare_table(fight, metric, players):
         head.append('<th><span style="color:%s">%s</span></th>'
                     % (colour, esc(attempt_label(report))))
 
+    # The best value in each attempt, so a cell's bar is a share of what the
+    # best player managed in that same pull rather than of the whole table.
+    column_top = []
+    for report in reports:
+        best = 0
+        for row in (report.get("players") or {}).values():
+            if isinstance(row, dict):
+                best = max(best, metric["get"](row))
+        column_top.append(best)
+
     rows = []
     for name in names:
         cells = ['<td class="name" style="color:%s">%s</td>'
                  % (class_color(players[name]), esc(name))]
         previous = None
-        for report in reports:
+        for report_index, report in enumerate(reports):
             row = (report.get("players") or {}).get(name)
             if not isinstance(row, dict):
                 cells.append('<td class="absent">assente</td>')
                 previous = None
                 continue
+
             value = metric["get"](row)
             state = verdict(metric, previous, value) if previous is not None else None
             cls = {"better": "up", "worse": "down"}.get(state, "")
             text = fmt(value)
             if metric["kind"] == "rate" and num(row.get("deaths")) > 0:
                 text += " +%d" % int(num(row["deaths"]))
-            cells.append('<td class="%s">%s</td>' % (cls, text))
+            # The number stays; the bar behind it is what makes a column of
+            # twenty-five of them scannable. Widths are shares of the best
+            # value in that column, so the eye compares within an attempt.
+            share = (value / column_top[report_index] * 100) if column_top[report_index] else 0
+            cells.append('<td class="%s"><span class="fill" style="width:%.1f%%"></span>'
+                         '<span class="n">%s</span></td>' % (cls, share, text))
             previous = value
         rows.append("<tr>%s</tr>" % "".join(cells))
 
@@ -794,15 +882,23 @@ th, td { padding:5px 10px; text-align:center; border-bottom:1px solid #232529;
 th { color:#9aa0a8; font-weight:600; font-size:12px; }
 td.name, th.name { text-align:left; }
 td.absent { color:#5c6068; font-style:italic; }
-td.up { color:#55dd55; } td.down { color:#ff5555; }
+td.up .n { color:#55dd55; } td.down .n { color:#ff5555; }
+tbody td { position:relative; }
+td .fill { position:absolute; left:0; top:3px; bottom:3px; border-radius:2px;
+           background:rgba(255,255,255,0.07); }
+td .n { position:relative; }
 .grid { display:flex; flex-wrap:wrap; gap:12px; }
 .card { margin:0; border:1px solid #232529; border-radius:5px; background:#131418;
-        padding:8px 6px 4px; width:340px; }
+        padding:8px 6px 4px; width:360px; }
 .card figcaption { font-size:12px; color:#ffd100; padding:0 6px 2px; }
 .card figcaption .up { color:#55dd55; } .card figcaption .down { color:#ff5555; }
 .card figcaption .flat { color:#8b8f96; }
 .chart { width:100%; height:auto; display:block; }
 .chart .axis { stroke:#3a3d42; stroke-width:1; }
+.chart .grid { stroke:#26282d; stroke-width:1; }
+.chart .avg { stroke:#8b8f96; stroke-width:1; stroke-dasharray:4 3; }
+.chart text.t { fill:#6f747c; font-size:8px; text-anchor:end; }
+.chart text.a { fill:#8b8f96; font-size:8px; text-anchor:end; }
 .chart text { fill:#9aa0a8; font-size:9px; text-anchor:middle;
               font-family:"Segoe UI",system-ui,sans-serif; }
 .chart text.v { fill:#d6dae0; }

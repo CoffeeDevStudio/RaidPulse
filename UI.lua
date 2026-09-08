@@ -2359,37 +2359,104 @@ function MCA:GetPlayerAttempts(playerName, boss, groupID, day)
     return out
 end
 
+-- Round gridline values at or below `top`.
+--
+-- Bars alone give a ratio and nothing else: 86k beside 36k looks the same as
+-- 860k beside 360k. A labelled scale is what turns the picture back into
+-- quantities.
+--
+-- The count is biased down by half a line, or a top of 16.7M picks a 10M step
+-- and draws one gridline where 5M draws three. `integer` keeps a count metric
+-- off fractional steps, which would label a chart topping out at one death
+-- with both "0" and "1".
+local function niceTicks(top, integer)
+    if not top or top <= 0 then return {} end
+
+    local raw = top / 3.5
+    local magnitude = 10 ^ math.floor(math.log10(raw))
+    local step = 10 * magnitude
+    for _, candidate in ipairs({1, 2, 2.5, 5, 10}) do
+        if raw <= candidate * magnitude then
+            step = candidate * magnitude
+            break
+        end
+    end
+
+    if integer then step = math.max(1, math.floor(step + 0.5)) end
+
+    local ticks, value = {}, step
+    while value <= top * 1.001 do
+        ticks[#ticks + 1] = value
+        value = value + step
+    end
+    return ticks
+end
+
 -- A column chart built from plain textures. WoW has no canvas and no charting
 -- widget, and for a dozen pulls sized rectangles are the entire job. The
 -- textures belong to the card frame, so they are recycled along with it.
-function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue)
+--
+-- Beyond the columns it carries a labelled scale and a dashed line at the
+-- average of what is shown. The average is the reference the chart used to
+-- lack: without it a column says only "taller than the one beside it", and the
+-- question is almost always whether a pull was above or below normal.
+function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue, isCount)
     local card = self:Panel(parent, {"TOPLEFT", parent, "TOPLEFT", x, y}, w, h)
 
     self:Text(card, title, "GameFontNormal",
         {"TOPLEFT", card, "TOPLEFT", 10, -8}, w - 20, self:UIColor("accent"))
 
-    local maxV = 0
-    for _, point in ipairs(series) do maxV = math.max(maxV, point.value or 0) end
+    local maxV, sum, counted = 0, 0, 0
+    for _, point in ipairs(series) do
+        local value = point.value or 0
+        maxV = math.max(maxV, value)
+        -- Averaged over the attempts that have a figure. A zero is "absent",
+        -- or a metric that does not apply to this player; counting it as a
+        -- performance of nothing drags the line below every column it is a
+        -- reference for.
+        if value > 0 then
+            sum = sum + value
+            counted = counted + 1
+        end
+    end
+    local average = (counted > 0) and (sum / counted) or 0
 
-    -- Room kept above the plot for the title and the value labels, and below
-    -- it for the outcome band and the attempt times.
+    -- Room kept left for the scale, above for the title and value labels, and
+    -- below for the outcome band and the attempt times.
+    local axisW = 40
     local baseline = -(h - 34)
     local plotH = h - 80
 
+    local function yOf(value)
+        if maxV <= 0 then return baseline end
+        return baseline + math.min(plotH, value / maxV * plotH)
+    end
+
+    for _, tick in ipairs(niceTicks(maxV, isCount)) do
+        local gy = yOf(tick)
+        local line = self:AcquireTexture(card, "ARTWORK")
+        line:SetColorTexture(0.15, 0.16, 0.18, 1)
+        line:SetPoint("TOPLEFT", card, "TOPLEFT", axisW, gy)
+        line:SetSize(w - axisW - 10, 1)
+
+        self:Text(card, formatValue(tick), "GameFontNormalSmall",
+            {"RIGHT", card, "TOPLEFT", axisW - 6, gy + 4}, axisW - 10,
+            {0.44, 0.46, 0.49, 1}, "RIGHT")
+    end
+
     local axis = self:AcquireTexture(card, "ARTWORK")
     axis:SetColorTexture(0.30, 0.31, 0.33, 1)
-    axis:SetPoint("TOPLEFT", card, "TOPLEFT", 10, baseline)
-    axis:SetSize(w - 20, 1)
+    axis:SetPoint("TOPLEFT", card, "TOPLEFT", axisW, baseline)
+    axis:SetSize(w - axisW - 10, 1)
 
-    local slot = (w - 20) / math.max(#series, 1)
+    local slot = (w - axisW - 10) / math.max(#series, 1)
     local barW = math.max(5, math.min(34, slot - 10))
 
     for i, point in ipairs(series) do
         local value = point.value or 0
-        local barH = 1
-        if maxV > 0 then barH = math.max(1, math.floor(value / maxV * plotH)) end
+        local barH = math.max(1, yOf(value) - baseline)
 
-        local cx = 10 + (i - 0.5) * slot
+        local cx = axisW + (i - 0.5) * slot
         local c = point.color or self:UIColor("blue")
 
         local bar = self:AcquireTexture(card, "ARTWORK")
@@ -2418,6 +2485,20 @@ function MCA:DrawBarChart(parent, x, y, w, h, title, series, formatValue)
         self:Text(card, point.label or "", "GameFontNormalSmall",
             {"TOP", card, "TOPLEFT", cx, baseline - 14}, slot,
             self:UIColor("gray"), "CENTER")
+    end
+
+    -- Drawn over the columns, and only when more than one attempt has a
+    -- figure: the average of a single attempt is that attempt.
+    if counted > 1 and average > 0 then
+        local ay = yOf(average)
+        local line = self:AcquireTexture(card, "OVERLAY")
+        line:SetColorTexture(0.55, 0.57, 0.60, 0.9)
+        line:SetPoint("TOPLEFT", card, "TOPLEFT", axisW, ay)
+        line:SetSize(w - axisW - 10, 1)
+
+        self:Text(card, "media " .. formatValue(average), "GameFontNormalSmall",
+            {"BOTTOMRIGHT", card, "TOPLEFT", w - 12, ay + 2}, 120,
+            {0.55, 0.57, 0.60, 1}, "RIGHT")
     end
 
     return card
@@ -2887,7 +2968,7 @@ function MCA:DrawPlayerCharts(parent, data, y)
             top - math.floor(drawn / cols) * (chartH + gapY),
             chartW, chartH,
             metric.label .. note,
-            series, formatValue)
+            series, formatValue, metric.kind == "count")
         drawn = drawn + 1
     end
 
