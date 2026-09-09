@@ -516,6 +516,14 @@ function MCA:ComputeLocalParse(player, data)
 end
 
 -- Public: parse color, mirrors the WCL palette used by GetRatingColor.
+-- The whole parse system hangs off this. Disabled, every reading of it is
+-- suppressed rather than the code being removed: the numbers are still
+-- computed on demand behind /rp parse, which is what makes it debuggable.
+function MCA:IsParseEnabled()
+    return RaidPulseDB and RaidPulseDB.config
+        and RaidPulseDB.config.parseEnabled == true
+end
+
 function MCA:GetParseColor(parse)
     parse = tonumber(parse or 0) or 0
     if parse >= 99 then return {0.886, 0.408, 1.000, 1} end -- pink
@@ -544,6 +552,10 @@ end
 -- Source is "benchmark" when it comes from RaidPulse_Benchmarks, "relative" when
 -- it falls back to the previous in-group relative rating.
 function MCA:ResolvePlayerParse(player, data)
+    if not self:IsParseEnabled() then
+        return nil, self:UIColor("gray"), "-", "disabled"
+    end
+
     -- Try real (approximate) parse first.
     local parse, source, bounded = self:ComputeLocalParse(player, data)
     if parse and source then

@@ -31,6 +31,13 @@ MCA.CONFIG_DEFAULTS = {
     minimapButtonShown = true,
     minimapAngle       = 225,
     historyLimit       = 50,
+
+    -- Off until the parse can be trusted. Below the top 2000 logs of a spec
+    -- the API gives us nothing to measure against, and the number that came
+    -- out of that gap was invented: 36 where WarcraftLogs said 9. The switch
+    -- is in the settings so the system can still be exercised while it is
+    -- worked on, rather than being commented out and forgotten.
+    parseEnabled       = false,
 }
 
 -- Must run again on ADDON_LOADED: WoW replaces the global with the stored

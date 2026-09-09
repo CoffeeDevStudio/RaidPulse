@@ -1331,6 +1331,15 @@ def render(db, sv_path, containers, total_sections=None, filter_note=""):
     return "\n".join(out)
 
 
+def parse_enabled(db):
+    """The addon's own switch, read from the same saved variables.
+
+    The parse is off by default while it cannot be trusted, and a page that
+    kept printing it would undo the point of switching it off in game.
+    """
+    return bool(((db or {}).get("config") or {}).get("parseEnabled"))
+
+
 def has_data(reports, metric):
     """Deaths are drawn even when nobody died; everything else earns its place."""
     if metric["key"] == "deaths":
@@ -1401,6 +1410,14 @@ def main():
 
     db = load_saved_variables(sv)
     history = number_pulls(normalise(as_list((db or {}).get("history") or {})))
+
+    if not parse_enabled(db):
+        for metric in list(METRICS):
+            if metric["key"] == "parse":
+                METRICS.remove(metric)
+        METRIC_BY_KEY.pop("parse", None)
+        for role, keys in ROLE_CHARTS.items():
+            ROLE_CHARTS[role] = [k for k in keys if k != "parse"]
 
     day = parse_day(args.day) if args.day else None
     if day:

@@ -1742,11 +1742,25 @@ local COMPARE_METRICS = {
 -- was removed, while interrupts only ever arrive from the meter. A column of
 -- zeroes for twenty-four people is worse than not offering the comparison.
 
-function MCA:GetCompareMetric()
+-- The metrics actually on offer. Parse drops out while the system is off, and
+-- with it the chip, the column and the chart -- a metric that is switched off
+-- but still listed is worse than one that is missing.
+function MCA:GetCompareMetrics()
+    if self:IsParseEnabled() then return COMPARE_METRICS end
+
+    local out = {}
     for _, m in ipairs(COMPARE_METRICS) do
+        if m.key ~= "parse" then out[#out + 1] = m end
+    end
+    return out
+end
+
+function MCA:GetCompareMetric()
+    local metrics = self:GetCompareMetrics()
+    for _, m in ipairs(metrics) do
         if m.key == self.compareMetric then return m end
     end
-    return COMPARE_METRICS[1]
+    return metrics[1]
 end
 
 -- Columns get narrow fast, so cap how many attempts render at once. Selecting
@@ -2157,7 +2171,7 @@ function MCA:DrawComparePage(parent, data, y)
     local metric = self:GetCompareMetric()
     self:Text(parent, "Metrica:", "GameFontNormalSmall",
         {"TOPLEFT", parent, "TOPLEFT", PAGE_X + PAGE_PAD, y - 10}, 300, self:UIColor("gray"))
-    y = chipGrid(self, parent, y - 28, COMPARE_METRICS, 136, function(m, point, w, h)
+    y = chipGrid(self, parent, y - 28, self:GetCompareMetrics(), 136, function(m, point, w, h)
         self:FilterButton(parent, m.label, point, w, h, m.key == metric.key,
             function()
                 MCA.compareMetric = m.key
@@ -2381,7 +2395,14 @@ for _, m in ipairs(PLAYER_EXTRA_METRICS) do playerChartMetrics[m.key] = m end
 -- Anything without a role, and anyone the client reports as NONE, is charted
 -- as a damage dealer.
 local function chartsForRole(role)
-    return PLAYER_CHART_ROLES[tostring(role or "")] or PLAYER_CHART_ROLES.DAMAGER
+    local keys = PLAYER_CHART_ROLES[tostring(role or "")] or PLAYER_CHART_ROLES.DAMAGER
+    if MCA:IsParseEnabled() then return keys end
+
+    local out = {}
+    for _, key in ipairs(keys) do
+        if key ~= "parse" then out[#out + 1] = key end
+    end
+    return out
 end
 
 -- Every saved attempt on this fight in which the player appears, oldest
@@ -3249,6 +3270,30 @@ function MCA:DrawFullPage(root, data)
             self:UIColor("gray"))
         y = y - 56
 
+        sectionHeader("Sperimentale")
+
+        local parseOn = self:IsParseEnabled()
+        self:Text(child, "Parse: " .. (parseOn and "ON" or "OFF"), "GameFontNormal",
+            {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y}, 200,
+            parseOn and self:UIColor("green") or self:UIColor("red"))
+        self:Button(child, "Toggle", {"TOPLEFT", child, "TOPLEFT", 240, y + 4}, 90, 22,
+            function()
+                RaidPulseDB.config.parseEnabled = not RaidPulseDB.config.parseEnabled
+                MCA:BuildDashboard(data)
+            end)
+        y = y - 30
+
+        self:Text(child,
+            "Spento. Il parse locale confronta il tuo dps con i migliori 2000 log "
+            .. "di WarcraftLogs per quello spec: sotto quel campione l'API non "
+            .. "espone piu' nulla e il numero veniva stimato, sbagliando di molto "
+            .. "(36 dove WarcraftLogs diceva 9). Acceso torna visibile ovunque, "
+            .. "per poterci lavorare. /rp parse resta attivo in entrambi i casi.",
+            "GameFontNormalSmall",
+            {"TOPLEFT", child, "TOPLEFT", PAGE_X + PAGE_PAD, y - 4}, 620,
+            self:UIColor("gray"))
+        y = y - 56
+
         sectionHeader("Tasti rapidi")
 
         for _, action in ipairs(MCA.KEYBIND_ACTIONS or {}) do
@@ -3492,14 +3537,23 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
     local tableW = outerW - 10
     local metricLabel = wantHealer and "HPS" or "DPS"
 
+    -- With the parse off the column goes rather than filling with dashes, and
+    -- the metric takes the width it leaves behind.
+    local showParse = self:IsParseEnabled()
+
     local cols = {
         {label="#", x=6, w=22, justify="CENTER"},
         {label="Player", x=36, w=130},
         {label="Classe", x=178, w=105},
         {label="Morti", x=292, w=44, justify="CENTER"},
-        {label=metricLabel, x=348, w=72, justify="CENTER"},
-        {label="Parse", x=434, w=math.max(tableW - 434, 70), justify="CENTER"}
+        {label=metricLabel, x=348,
+         w=showParse and 72 or math.max(tableW - 348, 72), justify="CENTER"},
     }
+
+    if showParse then
+        cols[#cols + 1] = {label="Parse", x=434,
+                           w=math.max(tableW - 434, 70), justify="CENTER"}
+    end
 
     local y = -2
     y = self:TableHeader(child, cols, y)
@@ -3516,8 +3570,6 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
         row:SetSize(tableW, 28)
         self:SetBackdropSolid(row, i % 2 == 0 and self:UIColor("rowAlt") or self:UIColor("row"), {0.12,0.13,0.14,1})
 
-        local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
-
         self:Text(row, tostring(i)..".", "GameFontNormal", {"LEFT", row, "LEFT", cols[1].x, 0}, cols[1].w, self:UIColor("white"), "CENTER")
 
         self:ClassIcon(row, p.class, cols[2].x, -5, 18)
@@ -3528,7 +3580,11 @@ function MCA:DrawRoleMetricTable(parent, data, title, wantHealer)
 
         self:Text(row, tostring(p.deaths or 0), "GameFontNormal", {"LEFT", row, "LEFT", cols[4].x, 0}, cols[4].w, (p.deaths or 0) > 0 and self:UIColor("red") or self:UIColor("white"), "CENTER")
         self:Text(row, self:FormatMetricValue(self:GetFightMetric(p)), "GameFontNormal", {"LEFT", row, "LEFT", cols[5].x, 0}, cols[5].w, self:UIColor("white"), "CENTER")
-        self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", cols[6].x, 0}, cols[6].w, parseColor, "CENTER")
+
+        if showParse then
+            local _, parseColor, parseText = self:ResolvePlayerParse(p, data)
+            self:Text(row, parseText, "GameFontNormal", {"LEFT", row, "LEFT", cols[6].x, 0}, cols[6].w, parseColor, "CENTER")
+        end
 
         row:SetScript("OnClick", function()
             MCA.selectedPlayer = p

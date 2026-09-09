@@ -63,11 +63,20 @@ function MCA:GetExportText(data)
         ""
     }
 
+    local showParse = self:IsParseEnabled()
+
     for _, p in pairs(data.players or {}) do
         local metric = self.GetFightMetric and self:GetFightMetric(p) or 0
         local metricName = ((p.role or "") == "HEALER") and "hps" or "dps"
-        local rating = p.mcaRating or self:GetScore(p)
-        table.insert(lines, "- " .. (p.name or "?") .. " " .. (p.class or "?") .. " deaths=" .. (p.deaths or 0) .. " " .. metricName .. "=" .. tostring(math.floor(metric or 0)) .. " rating=" .. tostring(rating))
+        local line = "- " .. (p.name or "?") .. " " .. (p.class or "?")
+            .. " deaths=" .. (p.deaths or 0)
+            .. " " .. metricName .. "=" .. tostring(math.floor(metric or 0))
+
+        if showParse then
+            line = line .. " rating=" .. tostring(p.mcaRating or self:GetScore(p))
+        end
+
+        table.insert(lines, line)
     end
 
     return table.concat(lines, "\n")
