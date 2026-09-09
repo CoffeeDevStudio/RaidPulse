@@ -225,10 +225,32 @@ local function percentileFromCurve(value, ref)
         end
     end
 
-    -- Below the lowest observed anchor. The bracket sample only covers the top
-    -- of the bracket population, so "p1 of our sample" is not a literal 1st
-    -- percentile and we must keep going down rather than clamping there.
+    -- Below the lowest observed anchor.
     --
+    -- On a COMPLETE sample this is a real answer: we hold every logged kill in
+    -- the bracket, so being under the worst of them is genuinely near zero and
+    -- the decay below is a fair reading of how far under.
+    --
+    -- On a TRUNCATED one it is not. The v2 API returns at most 2000 rankings,
+    -- so for a popular bracket we hold the top 2000 and nothing else, and the
+    -- shape of the rest cannot be inferred from them. This used to guess
+    -- anyway: an Arcane Mage at 96.8k against a bracket whose worst sampled
+    -- log was 142.6k was handed 36, where WarcraftLogs said 9. Every step of
+    -- that number after "off the bottom of the curve" was invented.
+    --
+    -- It now returns the floor as an upper bound and says so, which is the
+    -- most the data supports: below the sample, and we cannot say how far.
+    local lowest = anchors[#anchors]
+    if lowest.v <= 0 then return 0 end
+
+    local ratio = value / lowest.v
+    if ratio <= 0 then return 0 end
+    if ratio >= 1 then return math.floor(lowest.p + 0.5) end
+
+    if compressed then
+        return math.floor(lowest.p + 0.5), true
+    end
+
     -- Extrapolate from the LOWEST anchor, not from the top one: anchoring on
     -- the top makes the curve jump when it crosses the last anchor, because
     -- the anchors are remapped for compressed curves while a top-anchored
@@ -237,13 +259,6 @@ local function percentileFromCurve(value, ref)
     -- UP as the DPS went DOWN. Scaling from the lowest anchor is continuous
     -- there by construction (ratio = 1 gives back lowest.p) and still decays
     -- monotonically to 0.
-    local lowest = anchors[#anchors]
-    if lowest.v <= 0 then return 0 end
-
-    local ratio = value / lowest.v
-    if ratio <= 0 then return 0 end
-    if ratio >= 1 then return math.floor(lowest.p + 0.5) end
-
     local extrapolated = lowest.p * (ratio ^ 1.3)
     if extrapolated < 0 then extrapolated = 0 end
     return math.floor(extrapolated + 0.5)
@@ -276,6 +291,9 @@ local function percentileFromAnchors(value, ref)
     end
 end
 
+-- Returns (percentile, isUpperBound). The second value is true when the value
+-- fell below a truncated sample, where the percentile is a ceiling rather than
+-- a reading.
 local function computePercentile(value, ref)
     if refHasCurve(ref) then
         return percentileFromCurve(value, ref)
@@ -493,7 +511,8 @@ function MCA:ComputeLocalParse(player, data)
     end
     if not value or value <= 0 then return 0, source end
 
-    return computePercentile(value, ref), source
+    local parse, bounded = computePercentile(value, ref)
+    return parse, source, bounded
 end
 
 -- Public: parse color, mirrors the WCL palette used by GetRatingColor.
@@ -511,9 +530,12 @@ end
 -- the value is a local approximation, not a real WarcraftLogs parse.
 --   "-" if we can't compute (no benchmarks for this encounter/difficulty)
 --   "~72"  otherwise
-function MCA:FormatParse(parse, hasRef)
+-- "~36" is a reading. "<36" is a ceiling: the value fell under a sample that
+-- only covers the top of its bracket, so all we know is that it is below.
+function MCA:FormatParse(parse, hasRef, bounded)
     if hasRef == false then return "-" end
     if not parse then return "-" end
+    if bounded then return "<" .. tostring(parse) end
     return "~" .. tostring(parse)
 end
 
@@ -523,10 +545,12 @@ end
 -- it falls back to the previous in-group relative rating.
 function MCA:ResolvePlayerParse(player, data)
     -- Try real (approximate) parse first.
-    local parse, source = self:ComputeLocalParse(player, data)
+    local parse, source, bounded = self:ComputeLocalParse(player, data)
     if parse and source then
-        local color = self:GetParseColor(parse)
-        return parse, color, self:FormatParse(parse, true), "benchmark"
+        -- Coloured for the ceiling, not for the ceiling's value: a "<36" is
+        -- somewhere below 36 and painting it as a 36 would undo the point.
+        local color = self:GetParseColor(bounded and 0 or parse)
+        return parse, color, self:FormatParse(parse, true, bounded), "benchmark"
     end
 
     -- Fall back to the in-group relative rating.
